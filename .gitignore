@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+*.egg
+
+# Env / secrets
+.env
+*.env
+
+# DB artefacts
+*.db
+*.sqlite
+
+# Uploads / vector store
+uploads/
+chroma_db/
+
+# Alembic
+backend/alembic.ini
+
+# Node
+node_modules/
+dist/
+.cache/
+
+# Editor
+.vscode/
+.idea/
+*.DS_Store

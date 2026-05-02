@@ -1,0 +1,16 @@
+[project]
+name = "amzur-ai-chat-backend"
+version = "0.1.0"
+requires-python = ">=3.11,<3.13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = []
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
