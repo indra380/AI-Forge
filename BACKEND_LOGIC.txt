@@ -1,0 +1,1322 @@
+================================================================================
+  AMZUR AI CHAT — BACKEND LOGIC REFERENCE
+  Last updated: May 2026
+================================================================================
+
+This file documents every piece of backend logic implemented so far in the
+d:\AI forge\backend\app\ directory, organised by layer and feature.
+
+────────────────────────────────────────────────────────────────────────────────
+TABLE OF CONTENTS
+────────────────────────────────────────────────────────────────────────────────
+ 1. Application Entry Point (main.py)
+ 2. Configuration (core/config.py)
+ 3. Logging (core/logging.py)
+ 4. Database Layer (db/)
+ 5. ORM Models (models/)
+ 6. Pydantic Schemas (schemas/)
+ 7. Auth API & Service (api/auth.py + services/auth_service.py)
+ 8. Chat API (api/chat.py)
+ 9. Thread Service (services/thread_service.py)
+10. Chat Service (services/chat_service.py)
+11. Session Memory Service (services/memory_service.py)
+12. Memory Repository (services/memory_repository.py)
+13. Attachment Service (services/attachment_service.py)
+14. Attachment Storage (services/attachment_storage.py)
+15. AI Layer — LLM Clients (ai/llm.py)
+16. AI Layer — Chat Chain (ai/chains/chat_chain.py)
+17. AI Layer — Prompt Templates (ai/prompts/)
+18. Alembic Migrations
+19. Architecture Summary & Key Patterns
+20. Algorithms & Professional Terms Glossary
+
+
+════════════════════════════════════════════════════════════════════════════════
+1. APPLICATION ENTRY POINT  —  app/main.py
+════════════════════════════════════════════════════════════════════════════════
+
+Purpose
+  FastAPI app initialisation, middleware, router registration, and startup tasks.
+
+What it does
+  • Creates the FastAPI() application instance.
+  • Attaches CORS middleware — allows requests from settings.FRONTEND_URL with
+    credentials (required for httpOnly cookie auth).
+  • Mounts the /uploads static-file directory so uploaded files are publicly
+    served at /uploads/<filename>.
+  • Includes two routers with the /api prefix:
+      - /api/auth  →  authentication routes
+      - /api/chat  →  chat, thread, and attachment routes
+  • On startup, calls ensure_upload_directories() to create all needed upload
+    subdirectories (images/, videos/, documents/, code/) on disk.
+  • Exposes GET /health → {"status": "ok"} for container health probes.
+
+
+════════════════════════════════════════════════════════════════════════════════
+2. CONFIGURATION  —  app/core/config.py
+════════════════════════════════════════════════════════════════════════════════
+
+Purpose
+  Single Pydantic BaseSettings class — every runtime value comes from here.
+  No secrets or hardcoded values exist anywhere else in the codebase.
+
+Key setting groups
+
+  App
+    APP_NAME, ENVIRONMENT ("development"/"production"), SECRET_KEY,
+    JWT_EXPIRE_MINUTES (default 480), FRONTEND_URL
+
+  Database
+    DATABASE_URL  (postgresql+asyncpg://...)
+
+  Amzur LiteLLM Proxy  ← ALL AI calls route through this
+    LITELLM_PROXY_URL   = https://litellm.amzur.com
+    LITELLM_API_KEY     = sk-...
+    LLM_MODEL           = gemini/gemini-2.5-flash
+    LITELLM_EMBEDDING_MODEL = text-embedding-3-large
+    IMAGE_GEN_MODEL     = gemini/imagen-4.0-fast-generate-001
+
+  Google OAuth
+    GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI
+    (all Optional — app boots without them if OAuth not configured)
+
+  Redis / Session Memory
+    REDIS_URL
+    SESSION_MEMORY_TTL_HOURS (default 24)
+    MAX_HISTORY_MESSAGES (default 20)
+    MAX_CONTEXT_CHARS (default 24 000)
+    SESSION_MEMORY_FAIL_OPEN (default True — degrade gracefully if Redis down)
+    REDIS_CONNECT_TIMEOUT_SECONDS (default 0.15)
+    REDIS_OPERATION_TIMEOUT_SECONDS (default 0.25)
+    REDIS_RETRY_AFTER_SECONDS (default 15.0)
+
+  File Uploads
+    MAX_UPLOAD_MB / MAX_UPLOAD_SIZE_MB (default 25)
+    UPLOAD_PATH   (default ./uploads)
+    UPLOAD_STORAGE ("local" or "s3")
+    ATTACHMENT_IMAGE_MIME_TYPES     — list of accepted image MIME types
+    ATTACHMENT_VIDEO_MIME_TYPES     — list of accepted video MIME types
+    ATTACHMENT_DOCUMENT_MIME_TYPES  — list of accepted document MIME types
+    ATTACHMENT_CODE_MIME_TYPES      — list of accepted code MIME types
+
+  ChromaDB
+    CHROMA_PERSIST_DIR (./chroma_db)
+
+  Google Sheets
+    GOOGLE_SERVICE_ACCOUNT_JSON
+
+
+════════════════════════════════════════════════════════════════════════════════
+3. LOGGING  —  app/core/logging.py
+════════════════════════════════════════════════════════════════════════════════
+
+  get_logger(name: str) → logging.Logger
+    Creates and returns a named logger with:
+    • StreamHandler to stdout
+    • Format: [timestamp] LEVEL name: message
+    • Log level: DEBUG in development, INFO in production
+
+
+════════════════════════════════════════════════════════════════════════════════
+4. DATABASE LAYER  —  app/db/
+════════════════════════════════════════════════════════════════════════════════
+
+session.py
+  • engine — AsyncEngine built from DATABASE_URL.
+    SSL is enabled via connect_args={"ssl": "require"} because asyncpg does
+    not accept the sslmode query parameter in the connection string.
+  • AsyncSessionLocal — async_sessionmaker bound to engine,
+    expire_on_commit=False so ORM objects can be read after commit.
+  • Base — DeclarativeBase shared by all ORM models.
+  • get_db() — async generator dependency provider that yields an
+    AsyncSession and commits/rolls back in a try/finally block.
+
+init_db.py
+  • init_db() — async, calls Base.metadata.create_all() via a synchronous
+    engine path. Used for dev bootstrapping only; production uses Alembic.
+
+
+════════════════════════════════════════════════════════════════════════════════
+5. ORM MODELS  —  app/models/
+════════════════════════════════════════════════════════════════════════════════
+
+User  (table: users)
+  id            UUID PK
+  email         String, unique, indexed
+  hashed_password  String, nullable (null for Google-only accounts)
+  google_id     String, unique, nullable
+  created_at    DateTime(timezone=True), auto-set to UTC now
+  Relationships: messages, threads, attachments — all cascade-delete
+
+ChatThread  (table: chat_threads)
+  id            UUID PK
+  user_id       UUID FK → users, indexed, cascade-delete
+  title         String, default "New Chat"
+  type          String, default "chat", indexed
+  created_at, updated_at  DateTime(timezone=True), auto-managed
+  Relationships: user, messages (cascade-delete)
+
+ChatMessage  (table: chat_messages)
+  id            UUID PK
+  user_id       UUID FK → users, indexed
+  thread_id     UUID FK → chat_threads, indexed, cascade-delete
+  role          String: "user" | "assistant" | "system"
+  content       Text
+  created_at    DateTime(timezone=True)
+  Relationships: user, thread, attachments
+
+Attachment  (table: attachments)
+  id            UUID PK
+  user_id       UUID FK → users, indexed
+  session_id    UUID, indexed
+  message_id    UUID FK → chat_messages, nullable (null = pending/unsent)
+  file_name     String (stored name on disk, sanitised)
+  original_name String (user-provided filename)
+  content_type  String (MIME type validated server-side)
+  file_size     BigInteger (bytes)
+  storage_path  String (relative path on disk or S3 key)
+  attachment_type  String: "image" | "video" | "document" | "code", indexed
+  extracted_text   Text, nullable (PDF/DOCX/TXT content extracted at upload)
+  uploaded_at   DateTime(timezone=True)
+  Relationships: user, message
+
+
+════════════════════════════════════════════════════════════════════════════════
+6. PYDANTIC SCHEMAS  —  app/schemas/
+════════════════════════════════════════════════════════════════════════════════
+
+auth.py
+  RegisterRequest   email (5–255 chars), password (8–128 chars)
+  LoginRequest      email, password
+  UserResponse      id (UUID), email, google_id (optional)
+
+chat.py
+  ChatRequest         message (0–6000 chars), session_id (UUID),
+                      attachment_ids: list[UUID]
+  ClearSessionMemoryRequest  session_id
+  ChatHistoryItem     id, role, content, created_at,
+                      attachments: list[AttachmentResponse]
+  ThreadCreate        title (default "New Chat"), type (literal "chat")
+  ThreadUpdate        title (1–255 chars)
+  ThreadResponse      id, title, type, created_at, updated_at
+
+attachment.py
+  AttachmentResponse       id, file_id, file_name, original_name, file_url,
+                           content_type, file_size, attachment_type, uploaded_at
+  AttachmentUploadResponse same minus id and uploaded_at
+
+
+════════════════════════════════════════════════════════════════════════════════
+7. AUTH API & SERVICE  —  api/auth.py  +  services/auth_service.py
+════════════════════════════════════════════════════════════════════════════════
+
+HTTP Routes  (api/auth.py)
+─────────────────────────
+  POST /api/auth/register
+    Body: RegisterRequest → calls auth_service.register_user()
+    Sets httpOnly JWT cookie → returns UserResponse
+
+  POST /api/auth/login
+    Body: LoginRequest → calls auth_service.authenticate_user()
+    Sets httpOnly JWT cookie → returns UserResponse
+
+  POST /api/auth/logout
+    Deletes the auth cookie → 200 OK
+
+  GET /api/auth/me
+    Depends(get_current_user) → returns UserResponse of the caller
+
+  GET /api/auth/google
+    Builds Google OAuth consent URL → HTTP 302 redirect
+
+  GET /api/auth/google/callback
+    Exchanges code for Google access token → fetches profile → calls
+    auth_service.get_or_create_google_user() → sets JWT cookie →
+    redirects to frontend /chat
+    On any error calls _redirect_with_auth_error() to redirect with error QS
+
+Business Logic  (services/auth_service.py)
+───────────────────────────────────────────
+  hash_password(password)
+    Hashes with bcrypt. Plain text never stored.
+
+  verify_password(password, hashed_password)
+    bcrypt comparison. Returns bool.
+
+  create_access_token(user_id)
+    Issues HS256 JWT with:
+      sub = str(user_id)
+      exp = now + JWT_EXPIRE_MINUTES
+    Signed with SECRET_KEY.
+
+  _normalize_email(email)
+    lowercase + strip whitespace.
+
+  _validate_employee_email(email)
+    Rejects any email not ending in @amzur.com with HTTP 403.
+    Applies to both registration AND Google OAuth login.
+
+  get_user_by_email(db, email)
+    Async SELECT by normalised email. Returns User or None.
+
+  register_user(db, email, password)
+    1. Validate @amzur.com domain
+    2. Check no existing user with that email (HTTP 409 if duplicate)
+    3. Hash password, create User row, commit
+    4. Return User
+
+  authenticate_user(db, email, password)
+    1. Validate @amzur.com domain
+    2. Fetch user (HTTP 401 if not found)
+    3. bcrypt verify password (HTTP 401 if wrong)
+    4. Return User
+
+  get_current_user(access_token: Cookie, db)  ← FastAPI Depends()
+    1. Read JWT from httpOnly cookie named "access_token"
+    2. Decode with SECRET_KEY (raises HTTP 401 on invalid/expired)
+    3. Fetch User by id from DB (raises HTTP 401 if deleted)
+    4. Return User — used by every protected route
+
+  get_or_create_google_user(db, email, google_id)
+    1. Validate @amzur.com domain
+    2. Look up user by email
+    3a. Found → populate google_id if not set, commit (account linking)
+    3b. Not found → create new User with null hashed_password, commit
+    4. Return User
+
+Key security decisions
+  • JWT only in httpOnly cookie — never in response body, never in localStorage
+  • @amzur.com domain gate — only Amzur employees can register or sign in
+  • bcrypt for all password storage — no reversible hashing
+  • Cookie secure=True in production, False in development
+
+
+════════════════════════════════════════════════════════════════════════════════
+8. CHAT API  —  api/chat.py
+════════════════════════════════════════════════════════════════════════════════
+
+All routes require Depends(get_current_user).
+
+Thread management
+  GET    /api/chat/threads
+    Calls thread_service.list_threads() → list[ThreadResponse]
+
+  POST   /api/chat/threads
+    Body: ThreadCreate → calls thread_service.create_thread()
+    Returns ThreadResponse (201)
+
+  PATCH  /api/chat/threads/{thread_id}
+    Body: ThreadUpdate → calls thread_service.rename_thread()
+    Returns updated ThreadResponse (404 if not found)
+
+  DELETE /api/chat/threads/{thread_id}
+    Calls thread_service.delete_thread() → 204 No Content
+
+Messages
+  GET /api/chat/threads/{thread_id}/messages
+    Calls chat_service.list_chat_messages()
+    Calls attachment_service.list_message_attachments() to hydrate attachments
+    Returns list[ChatHistoryItem] with each message's attachment list
+
+Attachments
+  POST /api/chat/upload
+    Form field: file (UploadFile), session_id
+    Calls attachment_service.upload_attachment()
+    Returns AttachmentUploadResponse (201)
+
+  DELETE /api/chat/upload/{attachment_id}?session_id=...
+    Calls attachment_service.delete_pending_attachment()
+    Returns 204 — only pending (unsent) attachments can be deleted
+
+Streaming Chat
+  POST /api/chat/threads/{thread_id}/stream
+    Body: ChatRequest (message, session_id, attachment_ids)
+    Returns StreamingResponse(media_type="text/event-stream")
+
+    Flow inside the async generator:
+      1. Fetch thread, verify ownership (404/403 if wrong)
+      2. Get Redis session memory via memory_service (scoped key user_id:session_id)
+      3. Save incoming user message to DB (chat_service.save_chat_message)
+      4. Build multimodal user content:
+           - attachment_service.build_multimodal_user_content() returns either
+             a plain string OR a list of {type, text/image_url} content blocks
+             depending on whether images/PDFs are attached
+      5. Fetch last MAX_HISTORY_MESSAGES from DB (chat_service.list_chat_messages)
+      6. Build full message list: system prompt + history + current user message
+         (with multimodal content injected into the final HumanMessage)
+      7. Stream tokens via chat_service.stream_chat_response_with_messages()
+         Yields SSE events: {"type": "token", "content": "..."}
+      8. On stream complete:
+           - Save assistant response to DB
+           - Attach uploaded files to the saved user message
+           - Save user message to Redis memory
+           - Save assistant response to Redis memory
+           - touch_thread() to bump updated_at
+           - If thread titled "New Chat", generate title from first message
+             and yield {"type": "thread_renamed", "title": "..."} SSE event
+      9. Yield {"type": "done"} to signal end of stream
+     10. On any error yield {"type": "error", "message": "..."} and return
+
+Session Memory
+  POST /api/chat/memory/clear
+    Body: ClearSessionMemoryRequest → clears Redis key for user_id:session_id
+    Returns 200
+
+
+════════════════════════════════════════════════════════════════════════════════
+9. THREAD SERVICE  —  services/thread_service.py
+════════════════════════════════════════════════════════════════════════════════
+
+  create_thread(db, user_id, title, thread_type)
+    INSERT ChatThread with user_id, title, type. Commit. Return thread.
+
+  list_threads(db, user_id)
+    SELECT all threads WHERE user_id = ... ORDER BY updated_at DESC.
+
+  get_thread(db, thread_id, user_id)
+    SELECT WHERE id = thread_id AND user_id = user_id.
+    Returns None if not found (caller raises 404).
+
+  rename_thread(db, thread_id, user_id, title)
+    UPDATE title + updated_at WHERE id AND user_id match.
+    Returns updated thread or None.
+
+  delete_thread(db, thread_id, user_id)
+    DELETE WHERE id AND user_id match. Returns True/False.
+    Cascade deletes all messages and attachments automatically.
+
+  touch_thread(db, thread)
+    UPDATE thread.updated_at = utcnow(). Called after every new message.
+
+Ownership enforcement
+  Every function filters by user_id — a user can never access another
+  user's threads or messages.
+
+
+════════════════════════════════════════════════════════════════════════════════
+10. CHAT SERVICE  —  services/chat_service.py
+════════════════════════════════════════════════════════════════════════════════
+
+  load_chat_system_prompt()
+    Reads chat_system.txt from ai/prompts/ at runtime (not cached, so
+    prompt can be changed without restarting the server).
+
+  _build_title_chain()
+    LCEL chain: system_prompt | human_prompt | llm | StrOutputParser
+    Used to auto-generate thread titles.
+
+  generate_thread_title(first_message, user_email)
+    Invokes the title chain with first_message, metadata user_email.
+    Returns short title string (3–6 words, no punctuation/quotes).
+
+  _to_langchain_messages(messages: list[dict])
+    Converts role/content dicts to LangChain message objects:
+      "system"    → SystemMessage
+      "assistant" → AIMessage
+      "user"      → HumanMessage (supports both str and list content
+                                   for multimodal blocks)
+
+  stream_chat_response_with_messages(messages, user_email)
+    Async generator.
+    1. Converts message dicts to LangChain objects via _to_langchain_messages
+    2. Calls llm.astream(messages, config={"metadata": {"user_email": ...}})
+    3. Yields each token (chunk.content) as it arrives
+    4. Catches openai.BadRequestError containing "context"/"maximum"/"token"
+       and raises RuntimeError("context_length_exceeded") so the API layer
+       can surface a user-friendly error
+
+  save_chat_message(db, user_id, thread_id, role, content)
+    INSERT ChatMessage, commit, return ORM object.
+
+  list_chat_messages(db, user_id, thread_id)
+    SELECT all messages WHERE thread_id AND user_id, ORDER BY created_at ASC.
+
+Streaming pattern
+  llm is configured with streaming=True. stream_chat_response_with_messages()
+  yields tokens one-by-one — the response is never buffered to completion.
+  This allows the frontend to display tokens incrementally.
+
+Cost tracking
+  Every llm.astream() call includes config={"metadata": {"user_email": email}}
+  The LiteLLM proxy uses this to attribute cost per user.
+
+
+════════════════════════════════════════════════════════════════════════════════
+11. SESSION MEMORY SERVICE  —  services/memory_service.py
+════════════════════════════════════════════════════════════════════════════════
+
+Purpose
+  Maintains short-term conversational context across messages.
+  Memory is loaded fresh from Redis on every request — not kept in-process.
+
+ConversationMessage  (dataclass)
+  role, content, timestamp (ISO-8601 string), session_id
+
+MemoryService
+  get_history(session_id)
+    Calls repository.get_messages(), deserialises JSON, returns
+    list[ConversationMessage] ordered oldest-first.
+
+  save_message(session_id, role, content)
+    Appends new ConversationMessage to history.
+    Trims to last MAX_HISTORY_MESSAGES.
+    Persists via repository.save_messages().
+
+  clear_session(session_id)
+    Deletes all messages for session_id from Redis.
+
+  build_messages_with_context(session_id, system_prompt, latest_user_message)
+    Assembles the full message list sent to the LLM:
+      [system_prompt] + [history] + [latest_user_message]
+    Then trims by character budget (_trim_for_context_budget):
+      - Always keeps the system prompt and latest user message
+      - Drops the oldest history messages first if over MAX_CONTEXT_CHARS
+
+  _trim_messages(history)
+    Keeps only the last MAX_HISTORY_MESSAGES entries.
+
+  _trim_for_context_budget(messages)
+    Iterates from oldest to newest, dropping messages until total
+    character count is under MAX_CONTEXT_CHARS.
+    System prompt and latest user message are never dropped.
+
+get_memory_service()  →  FastAPI Depends() singleton provider
+
+
+════════════════════════════════════════════════════════════════════════════════
+12. MEMORY REPOSITORY  —  services/memory_repository.py
+════════════════════════════════════════════════════════════════════════════════
+
+Purpose
+  Redis abstraction with automatic in-process fallback when Redis is
+  unavailable. Implements fail-open behaviour (SESSION_MEMORY_FAIL_OPEN=True).
+
+MemoryRepository  (Protocol / interface)
+  get_messages(session_id)  → list[dict]
+  save_messages(session_id, messages)  → None
+  clear_messages(session_id)  → None
+
+RedisMemoryRepository  (main implementation)
+
+  Storage
+    Redis key:  chat:session:{session_id}
+    Value:      JSON array of message dicts
+    TTL:        SESSION_MEMORY_TTL_HOURS hours (refreshed on each write)
+
+  Fail-open logic
+    _redis_available: bool flag, starts True
+    _retry_after: datetime after which to retry Redis
+
+    _can_attempt_redis()
+      Returns True if Redis is considered available OR if retry window elapsed.
+
+    _mark_redis_unavailable()
+      Sets _redis_available=False and _retry_after = now + REDIS_RETRY_AFTER_SECONDS
+
+    On any Redis error during get/save/clear:
+      If FAIL_OPEN=True → log warning, mark unavailable, use in-process fallback
+      If FAIL_OPEN=False → raise RuntimeError (API returns 503)
+
+  In-process fallback
+    _fallback_store: dict[str, list[dict]]  (simple in-memory dict)
+    Used transparently when Redis is down.
+    Data survives in-process but is lost on server restart.
+
+  Async Redis client
+    Created with socket_connect_timeout=REDIS_CONNECT_TIMEOUT_SECONDS
+    and socket_timeout=REDIS_OPERATION_TIMEOUT_SECONDS
+    Ensures Redis failures fail fast (< 300ms total) rather than blocking
+    the response for seconds.
+
+get_memory_repository()  →  singleton provider
+
+
+════════════════════════════════════════════════════════════════════════════════
+13. ATTACHMENT SERVICE  —  services/attachment_service.py
+════════════════════════════════════════════════════════════════════════════════
+
+Purpose
+  Handles the complete lifecycle of file attachments:
+  upload → validate → store → extract text → attach to message → delete.
+
+AttachmentService
+
+  upload_attachment(db, user_id, session_id, upload: UploadFile)
+    1. Validate MIME type server-side (extension is not trusted)
+       Checks upload.content_type against all accepted MIME lists
+    2. Validate file size ≤ MAX_UPLOAD_SIZE_MB
+    3. Run antivirus hook (placeholder, no-op in current build)
+    4. Sanitise filename stem (_sanitize_stem)
+    5. Determine attachment category dir (images / videos / documents / code)
+    6. Delegate to AttachmentStorage.save() → returns StoredAttachment
+    7. Extract text if applicable (_extract_text):
+         PDF      → pypdf text extraction; if no text (scanned), render pages
+         DOCX     → XML/regex text extraction
+         TXT      → direct read
+         Code     → raw file content
+         Image/Video → None (no text)
+    8. INSERT Attachment row with message_id=NULL (pending state)
+    9. Commit and return Attachment ORM object
+
+  _extract_text(storage_path, content_type)
+    PDF:   Opens with pypdf. If extracted text is blank (scanned PDF),
+           falls back to PyMuPDF (fitz) to render first 4 pages as PNG images.
+           Text or rendered page paths are stored in extracted_text.
+    DOCX:  Opens as zip, parses word/document.xml, strips XML tags with regex.
+    TXT:   Reads file with utf-8 encoding (falls back to latin-1).
+    Code:  Reads file with utf-8 encoding.
+    Other: Returns None.
+
+  build_multimodal_user_content(db, user_id, session_id, attachment_ids, message_text)
+    For each attachment:
+      Image  → base64-encode file → build {"type": "image_url", "image_url":
+               {"url": "data:image/png;base64,..."}} content block
+      PDF    → if text extracted: prepend as text block
+               if scanned (pages as images): base64-encode each page PNG
+               → list of image_url blocks (max 4 pages)
+      DOCX/TXT/Code → text block with extracted_text content
+      Video  → metadata-only text block
+
+    Returns:
+      str  — if no visual content (plain text + text attachments only)
+      list — if any image/PDF-page content (multimodal content blocks)
+    The list form is what vision LLMs (like Gemini) understand for inline images.
+
+  attach_uploaded_files_to_message(db, user_id, session_id, message_id, attachment_ids)
+    UPDATE attachment.message_id = message_id for each id in attachment_ids
+    (only if attachment is pending and owned by the user).
+    This "locks" the attachment — it can no longer be deleted.
+
+  delete_pending_attachment(db, user_id, session_id, attachment_id)
+    Only deletes if message_id IS NULL (not yet sent).
+    Raises HTTP 409 if attachment is already linked to a message.
+    Also deletes the file from disk.
+
+  list_message_attachments(db, messages)
+    Given a list of ChatMessage objects, fetches all their attachments in one
+    query (keyed by message_id) to avoid N+1 queries.
+    Returns dict[UUID → list[AttachmentResponse]].
+
+  build_attachment_context(db, user_id, session_id, attachment_ids)
+    Builds a plain-text context string for non-multimodal use:
+    document/code = extracted text; image/video = metadata summary.
+
+  to_response(attachment)
+    Converts Attachment ORM → AttachmentResponse schema.
+
+Pending attachment lifecycle
+  Upload happens before the message is sent.
+  attachment.message_id = NULL while the user is composing the message.
+  Once the message is sent, attach_uploaded_files_to_message() sets message_id.
+  If the user removes an attachment before sending, delete_pending_attachment()
+  removes both the DB row and the file on disk.
+
+
+════════════════════════════════════════════════════════════════════════════════
+14. ATTACHMENT STORAGE  —  services/attachment_storage.py
+════════════════════════════════════════════════════════════════════════════════
+
+StoredAttachment  (dataclass)
+  file_name, storage_path, file_url, file_size
+
+AttachmentStorage  (abstract base class)
+  save(upload, category, safe_stem) → StoredAttachment  [async, abstract]
+
+LocalAttachmentStorage
+  Stores files at UPLOAD_PATH/{category}/{safe_stem}-{uuid_hex}{ext}
+  Streams upload in 1 MB chunks (avoids loading entire file into memory).
+  Returns relative file_url (/uploads/category/filename) for public serving.
+
+S3AttachmentStorage
+  Stub — raises NotImplementedError. Ready for future S3 migration.
+
+get_attachment_storage()
+  Factory: returns LocalAttachmentStorage if UPLOAD_STORAGE="local", else S3.
+
+ensure_upload_directories()
+  Creates UPLOAD_PATH and all category subdirs at startup.
+
+
+════════════════════════════════════════════════════════════════════════════════
+15. AI LAYER — LLM CLIENTS  —  app/ai/llm.py
+════════════════════════════════════════════════════════════════════════════════
+
+All three clients route through litellm.amzur.com. Never call any AI provider
+directly. Import from this file — never instantiate clients elsewhere.
+
+  llm  (ChatOpenAI)
+    model   = settings.LLM_MODEL        (gemini/gemini-2.5-flash)
+    base_url = settings.LITELLM_PROXY_URL
+    api_key  = settings.LITELLM_API_KEY
+    streaming = True
+    timeout   = 30 seconds
+    max_retries = 2
+    Used by all LangChain chains.
+
+  openai_client  (OpenAI)
+    api_key  = settings.LITELLM_API_KEY
+    base_url = settings.LITELLM_PROXY_URL
+    Used for direct SDK calls (image generation, embeddings outside LangChain).
+
+  embeddings  (OpenAIEmbeddings)
+    model    = settings.LITELLM_EMBEDDING_MODEL  (text-embedding-3-large)
+    base_url = settings.LITELLM_PROXY_URL
+    api_key  = settings.LITELLM_API_KEY
+    Available for RAG / vector search (ChromaDB ingestion).
+
+Cost tracking
+  Every call must include user_email in metadata so the LiteLLM proxy can
+  attribute cost and enforce per-user budgets.
+  Pattern for chains:
+    chain.invoke(..., config={"metadata": {"user_email": user.email}})
+  Pattern for direct SDK calls:
+    client.chat.completions.create(..., user=user.email,
+      extra_body={"metadata": {"application": APP_NAME, ...}})
+
+
+════════════════════════════════════════════════════════════════════════════════
+16. AI LAYER — CHAT CHAIN  —  app/ai/chains/chat_chain.py
+════════════════════════════════════════════════════════════════════════════════
+
+  _load_prompt(file_name)
+    Reads a prompt file from ai/prompts/ and returns its string content.
+
+  build_chat_chain()
+    Returns an LCEL RunnableSerializable:
+      ChatPromptTemplate([system_prompt, human_prompt]) | llm | StrOutputParser
+
+    Input variables: {human_input}
+    The chain is rebuilt on each call, so prompt file changes take effect
+    without a server restart.
+
+  LCEL-only rule
+    No LLMChain, SequentialChain, or ConversationalRetrievalChain anywhere.
+    All chains use the pipe operator (|) syntax.
+
+
+════════════════════════════════════════════════════════════════════════════════
+17. AI LAYER — PROMPT TEMPLATES  —  app/ai/prompts/
+════════════════════════════════════════════════════════════════════════════════
+
+chat_system.txt
+  System prompt for the main chat LLM.
+  Instructions include:
+    • Act as a helpful Amzur internal assistant
+    • If the user uploaded files, treat extracted_text as ground-truth content
+    • If multimodal image blocks are present, analyse them visually
+    • Always respond in Markdown
+    • Never refuse requests from Amzur employees
+
+chat_human.txt
+  Single placeholder: {human_input}
+  Replaced at runtime with the latest user message (plain text form, used
+  by the simple chain path — multimodal path injects content blocks directly
+  into the HumanMessage object instead).
+
+thread_title_system.txt
+  Instructs the LLM to produce a 3–6 word thread title from a user message.
+  No punctuation, no quotes, no explanation — title text only.
+
+thread_title_human.txt
+  Template: User message: {first_message}
+  Filled with the user's opening message to generate the thread title.
+
+
+════════════════════════════════════════════════════════════════════════════════
+18. ALEMBIC MIGRATIONS  —  backend/alembic/versions/
+════════════════════════════════════════════════════════════════════════════════
+
+Run with:  alembic upgrade head
+
+Migration history (oldest → newest)
+
+  b677c50ca036  create_users_and_chat_messages_tables
+    Creates: users, chat_threads, chat_messages tables with all base columns.
+
+  f2c1b7d3aab0  add_chat_threads_google_id_nullable
+    Adds google_id (String, nullable, unique) to users table.
+
+  d9303bb5868b  add_thread_type_column
+    Adds type column (String, default "chat", indexed) to chat_threads table.
+
+  b8f9e7c1d2a3  add_attachments_table
+    Creates: attachments table with all attachment columns.
+    Adds FK constraints to users and chat_messages.
+
+  a1b2c3d4e5f6  enable_rls_on_all_tables
+    Enables PostgreSQL Row-Level Security on all four tables.
+    Adds USING (auth.uid() = user_id) policies via raw SQL.
+    (Supabase-specific — uses auth.uid() function.)
+
+
+════════════════════════════════════════════════════════════════════════════════
+19. ARCHITECTURE SUMMARY & KEY PATTERNS
+════════════════════════════════════════════════════════════════════════════════
+
+Layering rule — no exceptions
+  Router (api/)     — parse request, call service, return response. No logic.
+  Service (services/) — all business logic. Framework-agnostic.
+  Model (models/)   — ORM column definitions only. No methods.
+  Schema (schemas/) — Pydantic I/O. Always separate from ORM models.
+
+Authentication flow
+  1. User logs in → auth_service issues HS256 JWT
+  2. JWT set in httpOnly cookie (never in body/localStorage)
+  3. All protected routes use Depends(get_current_user)
+  4. get_current_user reads cookie, decodes JWT, fetches User from DB
+  5. Google OAuth and email/password share the same JWT layer
+
+Domain gate
+  Only @amzur.com email addresses can register or log in (Google or email).
+  Enforced in both register_user and get_or_create_google_user.
+
+Streaming chat pipeline
+  Frontend POST → API streams SSE → LLM tokens yielded one-by-one
+  → frontend appends tokens to UI as they arrive (never buffers full response)
+
+Session memory
+  Redis-backed, keyed per user+session.
+  Fail-open: Redis down → transparent in-process fallback
+  Context budget: oldest messages dropped if over MAX_CONTEXT_CHARS
+
+Multimodal LLM support
+  Images       → base64 data URL → image_url content block in HumanMessage
+  PDFs (text)  → pypdf text extraction → prepended as text block
+  PDFs (scanned) → PyMuPDF renders pages to PNG → image_url blocks (max 4)
+  DOCX/TXT     → text extraction → prepended as text block
+  Code files   → raw text → prepended as text block
+  Video        → metadata-only text summary
+
+All AI calls route through LiteLLM proxy
+  URL: https://litellm.amzur.com
+  Key: LITELLM_API_KEY
+  Every call includes user email for cost attribution.
+  Switching models requires only an env var change — no code changes.
+
+File upload security
+  MIME type validated server-side — file extension is never trusted
+  File size enforced via MAX_UPLOAD_SIZE_MB
+  Filenames sanitised before storage (no path traversal)
+  Pending uploads can be deleted; sent attachments are immutable
+
+Database
+  PostgreSQL via asyncpg (async) for all app queries
+  SQLAlchemy 2.0 style (select(), mapped columns) — no legacy 1.x patterns
+  UUID primary keys on all tables
+  All timestamps in UTC with timezone=True
+  Schema changes via Alembic only — never modify DB directly
+
+════════════════════════════════════════════════════════════════════════════════
+20. ALGORITHMS & PROFESSIONAL TERMS GLOSSARY
+════════════════════════════════════════════════════════════════════════════════
+
+This section names every algorithm, design pattern, and engineering concept used
+in this backend, maps it to where it appears, and explains what it means.
+
+────────────────────────────────────────────────────────────────────────────────
+SECURITY ALGORITHMS
+────────────────────────────────────────────────────────────────────────────────
+
+bcrypt  (Adaptive Key-Derivation / Password Hashing Algorithm)
+  Where:  auth_service.hash_password(), auth_service.verify_password()
+  What:   A slow, salted one-way hashing algorithm designed specifically for
+          passwords. "Adaptive" means the cost factor can be increased over
+          time to keep up with faster hardware. Each hash includes a random
+          salt so two identical passwords produce different hashes, defeating
+          rainbow-table attacks.
+  Why:    Plain-text passwords are never stored. Even if the DB is leaked, an
+          attacker cannot reverse the hash to recover a password.
+  Also called: Password hashing, credential hashing, key stretching.
+
+HS256  (HMAC-SHA256 — Symmetric JWT Signing Algorithm)
+  Where:  auth_service.create_access_token(), get_current_user()
+  What:   A JSON Web Token (JWT, RFC 7519) is signed using HMAC with SHA-256.
+          The server uses a single SECRET_KEY to both sign and verify tokens.
+          The token payload (claims) is Base64URL-encoded and includes:
+            sub  — subject (user UUID)
+            exp  — expiration timestamp (Unix epoch)
+  Why:    Allows stateless authentication — the server verifies the token
+          without a DB lookup until the user data is actually needed.
+  Also called: Stateless authentication, bearer token, claims-based identity.
+
+httpOnly Cookie  (XSS-Resistant Token Transport)
+  Where:  All auth routes that set/delete the JWT.
+  What:   A cookie attribute that prevents JavaScript from reading the cookie
+          via document.cookie. The browser automatically sends it with every
+          same-site request but client-side scripts cannot access its value.
+  Why:    Eliminates the most common token theft vector — Cross-Site Scripting
+          (XSS) attacks that read tokens from localStorage or sessionStorage.
+  Companion:  SameSite=Lax prevents the cookie being sent on cross-site POST
+          requests, which mitigates CSRF (Cross-Site Request Forgery).
+
+OAuth 2.0 — Authorization Code Flow
+  Where:  api/auth.py Google routes, auth_service.get_or_create_google_user()
+  What:   A delegated-authorisation protocol. The steps are:
+            1. App redirects user to Google's authorisation endpoint with a
+               client_id, redirect_uri, and requested scopes.
+            2. User consents → Google redirects back with a one-time code.
+            3. App exchanges that code for an access token (server-to-server).
+            4. App uses the access token to fetch the user's profile from
+               Google's /userinfo endpoint.
+            5. App issues its own JWT cookie and redirects to the frontend.
+  Why:    The user's Google credentials never touch our server — only a
+          short-lived code and a scoped access token.
+  Also called: Social login, federated identity, SSO (Single Sign-On).
+
+Account Linking
+  Where:  auth_service.get_or_create_google_user()
+  What:   When a Google OAuth login arrives with an email that already exists
+          in the users table (registered via email/password), the system
+          populates that user's google_id instead of creating a duplicate row.
+  Why:    Prevents two accounts for the same person. One identity per email.
+  Also called: Identity federation, social account merge.
+
+Domain Gating  (Allowlist-Based Access Control)
+  Where:  auth_service._validate_employee_email()
+  What:   An email allowlist policy that rejects any address not ending in
+          @amzur.com at both registration and OAuth login time.
+  Why:    Ensures only Amzur employees can access the platform — even if
+          someone obtains the app URL.
+  Also called: Email domain whitelist, tenant isolation by domain.
+
+Row-Level Security  (RLS — PostgreSQL security policy)
+  Where:  Alembic migration a1b2c3d4e5f6
+  What:   A PostgreSQL feature that enforces access control at the database
+          engine level. A policy (USING auth.uid() = user_id) is attached to
+          each table. Even if application code runs a SELECT without a WHERE
+          clause, the DB engine silently filters rows to the current user.
+  Why:    Defence-in-depth. Even if a bug in service code omits a user_id
+          filter, the DB itself prevents cross-user data leaks.
+  Also called: Fine-grained access control, database-level authorisation.
+
+────────────────────────────────────────────────────────────────────────────────
+AI / LLM ALGORITHMS & CONCEPTS
+────────────────────────────────────────────────────────────────────────────────
+
+LLM  (Large Language Model)
+  Where:  ai/llm.py, all chat services.
+  What:   A neural network with billions of parameters trained on large text
+          corpora to predict the next token given a context window. We use
+          Gemini 2.5 Flash via the LiteLLM proxy.
+  Also called: Foundation model, generative AI model, transformer model.
+
+Tokenisation & Token Streaming
+  Where:  chat_service.stream_chat_response_with_messages(), chat API SSE loop.
+  What:   LLMs generate text one token at a time (a token ≈ 3–4 characters).
+          Instead of waiting for the full response, we use llm.astream() to
+          receive each token as it is generated and immediately forward it to
+          the browser via SSE.
+  Why:    Users see text appearing word-by-word (like a typewriter), which
+          feels faster and more interactive even if total latency is the same.
+  Also called: Incremental decoding, streaming inference, token-by-token output.
+
+Context Window  (LLM Input Limit)
+  Where:  memory_service._trim_for_context_budget(), chat_service error handling.
+  What:   The maximum number of tokens an LLM can process in a single call.
+          If the conversation history plus the system prompt exceeds this limit,
+          the API returns a BadRequestError.
+  We handle it by:
+    1. Proactively trimming history to MAX_CONTEXT_CHARS characters before
+       sending (sliding-window eviction).
+    2. Catching the BadRequestError and surfacing a user-friendly message.
+  Also called: Context length, input token limit, prompt budget.
+
+Sliding Window Eviction  (Memory Trimming Algorithm)
+  Where:  memory_service._trim_messages(), _trim_for_context_budget()
+  What:   Keep only the N most-recent items from an ordered list. When a new
+          item is added and the list exceeds capacity, the oldest item is
+          dropped (first-in, first-out). This is the "sliding window" because
+          the window of retained messages moves forward in time.
+          We apply it twice:
+            Pass 1 — trim to last MAX_HISTORY_MESSAGES count.
+            Pass 2 — trim by character budget, protecting the system prompt
+                     and latest user message (they are never evicted).
+  Also called: FIFO eviction, LRU approximation (count-based), context pruning.
+
+Prompt Engineering  (System and Human Prompt Templates)
+  Where:  ai/prompts/*.txt, chat_chain.py, chat_service.py
+  What:   The practice of crafting the text passed to an LLM to steer its
+          behaviour, persona, output format, and constraints. We use:
+            System prompt — sets the assistant's role and rules (always present)
+            Human prompt  — the user's actual message
+          Templates live in .txt files on disk and are read at runtime so they
+          can be tuned without redeploying code.
+  Also called: Prompt template, instruction tuning (inference-time), few-shot
+          prompting (if examples were included).
+
+LCEL  (LangChain Expression Language — Functional Chain Composition)
+  Where:  chat_chain.py, title chain in chat_service.py
+  What:   A pipe-operator (|) syntax for composing AI components:
+            prompt | llm | parser
+          Each step receives the output of the previous step. This is the
+          functional programming concept of function composition applied to
+          AI pipelines. LCEL chains are inherently async and support streaming.
+  Why:    Replaces the older class-based LLMChain pattern with a clean,
+          testable, composable design.
+  Also called: Declarative chain, pipeline composition, runnable sequence.
+
+Multimodal Input  (Vision-Language Model Content Blocks)
+  Where:  attachment_service.build_multimodal_user_content(), chat_service
+          _to_langchain_messages()
+  What:   Modern LLMs can accept not just text but also images in the same
+          prompt. The OpenAI-compatible API format represents this as a list
+          of content blocks inside a message:
+            [{"type": "text",      "text": "Describe this image"},
+             {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]
+          We build this list when the user attaches an image or scanned PDF,
+          then inject it as the content of the HumanMessage.
+  Also called: Vision-language model (VLM) input, mixed-modal prompt,
+          image-text interleaving.
+
+Base64 Encoding  (Binary-to-Text Encoding)
+  Where:  attachment_service._to_data_url(), build_multimodal_user_content()
+  What:   An encoding scheme (RFC 4648) that converts arbitrary binary data
+          (image bytes) into a string of ASCII characters using a 64-character
+          alphabet. We embed the encoded image directly in the API payload as a
+          data URL: data:image/png;base64,<encoded-bytes>
+  Why:    The LLM API only accepts JSON (text). Base64 is the standard way to
+          embed binary (image) data inside a JSON string.
+  Also called: Inline image encoding, data URI, binary-to-ASCII transcoding.
+
+PDF Rasterisation  (Scanned PDF Fallback)
+  Where:  attachment_service._render_pdf_pages_to_data_urls()
+  What:   The process of converting a vector/text PDF page into a raster image
+          (a grid of pixels — PNG). We use PyMuPDF (libmupdf) to render each
+          page to a PNG at 150 DPI. This is needed when a PDF is a scanned
+          document (i.e., it contains no extractable text — only image pixels).
+  Why:    A text-extraction library (pypdf) returns blank for scanned PDFs.
+          By rendering pages as images we can send them to the vision LLM for
+          OCR-equivalent understanding.
+  Also called: PDF-to-image conversion, page rendering, rasterisation, OCR
+          preprocessing.
+
+Text Extraction  (Document Parsing)
+  Where:  attachment_service._extract_text()
+  What:   Parsing structured file formats to obtain plain text:
+            PDF  → pypdf reads the internal text stream from each page.
+            DOCX → unzip the .docx container, parse word/document.xml with
+                   Python's xml.etree, strip tags with regex.
+            TXT/Code → direct utf-8 file read.
+  Why:    Extracted text is stored in the DB (extracted_text column) and
+          prepended to the LLM prompt so the model can answer questions about
+          the document content without vision.
+  Also called: Document ingestion, content extraction, NLP preprocessing.
+
+LLM Gateway / Proxy  (Centralised AI Router)
+  Where:  settings.LITELLM_PROXY_URL, ai/llm.py
+  What:   A reverse-proxy service (LiteLLM) that sits between the application
+          and multiple AI providers. It normalises the request format, enforces
+          rate limits, tracks cost per user, and allows model switching via
+          config rather than code changes.
+  Why:    AD-01 — single gateway for cost tracking, rate limiting, and provider
+          abstraction.
+  Also called: Model gateway, LLM router, AI proxy, inference gateway.
+
+Cost Attribution  (Per-User Spend Tracking)
+  Where:  Every llm.astream() / client.chat.completions.create() call.
+  What:   Each API call includes the authenticated user's email in the
+          metadata payload. The LiteLLM proxy reads this to track token
+          consumption and cost per user on its dashboard.
+  Also called: Metered billing metadata, user-level observability, chargeback.
+
+────────────────────────────────────────────────────────────────────────────────
+RESILIENCE & INFRASTRUCTURE ALGORITHMS
+────────────────────────────────────────────────────────────────────────────────
+
+Circuit Breaker Pattern
+  Where:  memory_repository.RedisMemoryRepository (_redis_available flag,
+          _mark_redis_unavailable, _can_attempt_redis)
+  What:   A fault-tolerance pattern that "opens" (disables) calls to a failing
+          service after detecting errors, then "half-opens" (retries) after a
+          cooldown period. States:
+            CLOSED  — Redis is healthy, all calls proceed normally.
+            OPEN    — Redis failed; calls are short-circuited to the fallback.
+            HALF-OPEN — cooldown elapsed; next call tries Redis again.
+  Why:    Prevents every chat request from spending 30 seconds waiting for a
+          Redis timeout. One fast failure → switch to fallback → retry later.
+  Also called: Fault isolation, bulkhead, retry with backoff (simplified form).
+
+Fail-Open vs Fail-Closed
+  Where:  SESSION_MEMORY_FAIL_OPEN setting, RedisMemoryRepository
+  What:   Describes what a system does when a dependency fails.
+            Fail-Open  — continue operating in a degraded but functional state.
+                         (memory falls back to in-process store)
+            Fail-Closed — refuse to serve requests until the dependency recovers.
+                         (returns HTTP 503)
+  We use Fail-Open (default) so that a Redis outage does not take down chat.
+  Also called: Graceful degradation, resilience engineering, availability
+          over consistency (CAP theorem trade-off).
+
+In-Process Fallback  (In-Memory Store)
+  Where:  memory_repository._fallback_store (dict[str, list[dict]])
+  What:   When Redis is unavailable, session data is stored in a plain Python
+          dictionary in the server process's heap memory. Data persists for the
+          lifetime of the process but is lost on restart.
+  Why:    Users keep their conversation context during a transient Redis outage
+          without experiencing errors.
+  Also called: In-memory cache, local state fallback, degraded persistence.
+
+Connection Timeout / Operation Timeout
+  Where:  REDIS_CONNECT_TIMEOUT_SECONDS (0.15s), REDIS_OPERATION_TIMEOUT_SECONDS
+          (0.25s) in RedisMemoryRepository
+  What:   Hard upper limits on how long a network call to Redis is allowed to
+          take. If Redis does not respond within the deadline, the call is
+          aborted and the circuit breaker opens.
+  Why:    Without timeouts, a network partition causes chat requests to hang
+          for minutes. With sub-300ms timeouts, the fallback kicks in almost
+          instantaneously from the user's perspective.
+  Also called: Deadline propagation, timeout fence, latency SLO enforcement.
+
+TTL  (Time-To-Live — Cache Expiry)
+  Where:  SESSION_MEMORY_TTL_HOURS, Redis key expiry in RedisMemoryRepository
+  What:   A Redis key attribute that causes the key to be automatically deleted
+          after a set duration. After SESSION_MEMORY_TTL_HOURS (default 24h)
+          of inactivity, the session's message history is purged.
+  Why:    Prevents Redis from filling up with stale session data indefinitely.
+  Also called: Key expiry, cache eviction, automatic garbage collection.
+
+────────────────────────────────────────────────────────────────────────────────
+SOFTWARE DESIGN PATTERNS
+────────────────────────────────────────────────────────────────────────────────
+
+Layered Architecture  (N-Tier / Clean Architecture)
+  Where:  The entire codebase structure.
+  What:   Code is organised into horizontal layers with strict dependency rules:
+            Presentation layer  (api/)      — HTTP in, HTTP out
+            Business logic layer (services/) — all domain rules
+            Data access layer   (models/)   — DB schema only
+            DTO layer           (schemas/)  — I/O contracts
+          Lower layers never import from higher layers.
+  Why:    Services can be unit-tested without HTTP. Business logic cannot leak
+          into route handlers. DB changes only affect the model layer.
+  Also called: N-tier architecture, separation of concerns, hexagonal
+          architecture (when combined with ports/adapters).
+
+Dependency Injection  (DI via FastAPI Depends())
+  Where:  Every route handler — get_db(), get_current_user(),
+          get_memory_service(), get_attachment_service()
+  What:   Instead of constructing dependencies inside a function, they are
+          declared as parameters and the framework resolves and injects them.
+          FastAPI's Depends() system handles async, caching, and teardown.
+  Why:    Makes services fully testable — in tests, real DB sessions and real
+          Redis clients can be swapped for mocks by overriding the Depends().
+  Also called: IoC (Inversion of Control), constructor injection (in other
+          frameworks), service locator (simplified form).
+
+Repository Pattern
+  Where:  services/memory_repository.py (MemoryRepository Protocol)
+  What:   Abstracts the data persistence mechanism behind an interface
+          (get_messages, save_messages, clear_messages). The service layer
+          talks to the interface, not to Redis or the fallback dict directly.
+          Concrete implementations (RedisMemoryRepository) can be swapped
+          without changing the service.
+  Why:    Makes the memory service testable with a stub repository.
+  Also called: Data access object (DAO), persistence abstraction.
+
+Strategy Pattern
+  Where:  services/attachment_storage.py (AttachmentStorage ABC with
+          LocalAttachmentStorage and S3AttachmentStorage)
+  What:   Defines a family of algorithms (storage backends) under a common
+          interface. The concrete strategy is selected at runtime by
+          get_attachment_storage() based on the UPLOAD_STORAGE env var.
+  Why:    Switching from local disk to S3 requires only a new class and an
+          env var change — zero changes to AttachmentService.
+  Also called: Policy pattern, pluggable backend, storage abstraction layer.
+
+Singleton Pattern
+  Where:  get_memory_service(), get_memory_repository(), get_attachment_service(),
+          get_attachment_storage(), and the llm / openai_client / embeddings
+          module-level instances in ai/llm.py.
+  What:   Guarantees that only one instance of a class exists per process.
+          All callers share the same instance (and its connection pool).
+  Why:    Avoids opening a new Redis connection or a new HTTP session on every
+          request. Connection pooling requires a shared client object.
+  Also called: Module-level singleton, process-scoped cache, shared resource.
+
+Factory Pattern
+  Where:  get_attachment_storage() in attachment_storage.py
+  What:   A function that decides which concrete implementation to instantiate
+          based on configuration, returning it as the abstract type.
+  Why:    The calling code (AttachmentService) only knows about
+          AttachmentStorage, not LocalAttachmentStorage — it is decoupled from
+          the construction decision.
+  Also called: Factory function, creational pattern, provider function.
+
+Pending State / State Machine  (Attachment Lifecycle)
+  Where:  Attachment.message_id nullable column, upload → attach → lock flow
+          in attachment_service.py
+  What:   An attachment moves through defined states:
+            PENDING   — uploaded, message_id IS NULL
+            ATTACHED  — message_id set, message sent, immutable
+            DELETED   — removed by user while still PENDING (file + row gone)
+          Transitions are one-way: ATTACHED attachments cannot be deleted.
+  Why:    Allows the user to preview and remove attachments before committing
+          them to the conversation history.
+  Also called: Lifecycle management, state machine, entity state transition.
+
+Optimistic Timestamp Update  (touch_thread)
+  Where:  thread_service.touch_thread(), called after every new message.
+  What:   After saving a message, we UPDATE chat_threads.updated_at = now()
+          without reading the row first. The sidebar sorts threads by
+          updated_at DESC, so the active thread always floats to the top.
+  Why:    Single UPDATE statement — no SELECT needed. Cheap and correct.
+  Also called: Last-modified timestamp, optimistic write, activity bump.
+
+────────────────────────────────────────────────────────────────────────────────
+NETWORK & PROTOCOL CONCEPTS
+────────────────────────────────────────────────────────────────────────────────
+
+SSE  (Server-Sent Events — Streaming HTTP Protocol)
+  Where:  POST /api/chat/threads/{thread_id}/stream returns
+          StreamingResponse(media_type="text/event-stream")
+  What:   A unidirectional HTTP streaming protocol (W3C standard). The server
+          holds the HTTP connection open and pushes newline-delimited JSON
+          events to the client. The connection is closed after the final event.
+          Event format:  data: {"type":"token","content":"Hello"}\n\n
+  Why:    Simpler than WebSockets for unidirectional server-to-client push.
+          Works over plain HTTP/1.1 and is natively supported by browsers.
+  Also called: Event stream, HTTP streaming, chunked transfer encoding (cousin).
+
+CORS  (Cross-Origin Resource Sharing)
+  Where:  CORSMiddleware in main.py
+  What:   A browser security mechanism that blocks JavaScript from making
+          requests to a different domain than the page's origin. The server
+          must explicitly allow the frontend origin via CORS headers.
+          We allow credentials (cookies) and the specific FRONTEND_URL origin.
+  Why:    The frontend (e.g. localhost:5173) and backend (localhost:8000) are
+          on different ports — different origins. Without CORS headers the
+          browser refuses to send the auth cookie.
+  Also called: Same-origin policy relaxation, cross-domain policy.
+
+MIME Type Validation  (Server-Side Content-Type Verification)
+  Where:  attachment_service._is_content_type_allowed(),
+          attachment_service._resolve_allowed_type()
+  What:   MIME types (Multipurpose Internet Mail Extensions, RFC 2045) are
+          standardised labels for file formats (e.g. image/png, application/pdf).
+          We validate the upload's Content-Type header against an allowlist
+          defined in settings — the file extension in the filename is IGNORED.
+  Why:    A user can rename a .exe to .pdf. Extension-based checks are trivially
+          bypassed. Content-Type (combined with magic-byte checking) is more
+          reliable.
+  Also called: Content-type allowlisting, MIME sniffing, upload validation.
+
+Chunked Upload  (Streaming File Read)
+  Where:  LocalAttachmentStorage.save() reads in 1 MB chunks.
+  What:   Instead of loading the entire uploaded file into memory at once,
+          the file is read and written in fixed-size chunks (1 MB).
+  Why:    A 25 MB upload would require 25 MB of heap memory per concurrent
+          upload if buffered. Chunked reading keeps memory usage bounded
+          regardless of file size or concurrent uploads.
+  Also called: Streaming I/O, buffered file transfer, memory-efficient upload.
+
+────────────────────────────────────────────────────────────────────────────────
+DATABASE CONCEPTS
+────────────────────────────────────────────────────────────────────────────────
+
+ORM  (Object-Relational Mapper — SQLAlchemy)
+  Where:  All models/, db/session.py
+  What:   A library that maps Python class definitions to database tables and
+          translates Python expressions into SQL. SQLAlchemy 2.0 uses the
+          "mapped column" style and async sessions.
+  Also called: Data mapper, active record (older pattern), model layer.
+
+UUID Primary Key  (Universally Unique Identifier)
+  Where:  Every table — id column is UUID type.
+  What:   A 128-bit identifier generated without coordination between nodes
+          (RFC 4122 version 4 — random). Formatted as
+          xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx.
+  Why:    No sequential integer means:
+          - IDs are unguessable (security)
+          - Records can be created offline or in distributed systems
+          - No integer overflow
+  Also called: GUID (Microsoft term), random primary key.
+
+Cascade Delete  (Referential Integrity Action)
+  Where:  All FK relationships (user → threads → messages → attachments).
+  What:   A database constraint action: when a parent row is deleted, the DB
+          engine automatically deletes all child rows that reference it.
+          Configured via ondelete="CASCADE" in SQLAlchemy FK definitions.
+  Why:    Deleting a user automatically removes all their threads, messages,
+          and attachments — no orphan rows, no application-side cleanup loops.
+  Also called: ON DELETE CASCADE, referential cascade, dependent row cleanup.
+
+N+1 Query Problem  (and its solution)
+  Where:  attachment_service.list_message_attachments()
+  What:   The anti-pattern where fetching N parent records then issuing 1
+          query per parent to fetch children results in N+1 total queries.
+          We solve it by fetching all attachments for all message IDs in a
+          single WHERE message_id IN (...) query, then grouping results in
+          Python.
+  Also called: Lazy loading problem, select N+1, eager loading solution
+          (SQLAlchemy selectinload/joinedload are the ORM equivalents).
+
+UTC Timestamps  (Timezone-Aware Storage)
+  Where:  All DateTime columns — DateTime(timezone=True), stored as UTC.
+  What:   All timestamps are stored in Coordinated Universal Time (UTC) in
+          the database. Conversion to the user's local timezone happens at
+          the presentation layer (frontend).
+  Why:    Timezone-naive timestamps cause bugs when servers or users are in
+          different timezones (especially across DST changes).
+  Also called: ISO 8601 timestamps, timezone-aware datetime, UTC normalisation.
+
+Alembic Migration  (Schema Version Control)
+  Where:  backend/alembic/versions/
+  What:   Alembic is the standard migration tool for SQLAlchemy. Each
+          migration file contains an upgrade() function (apply change) and
+          a downgrade() function (reverse it). The alembic_version table in
+          PostgreSQL tracks which migrations have been applied.
+  Why:    Production databases cannot be reset. Schema evolution (adding
+          columns, tables, indexes) must be applied incrementally and
+          reproducibly.
+  Also called: Database migration, schema evolution, DDL versioning.
+
+────────────────────────────────────────────────────────────────────────────────
+QUICK REFERENCE TABLE — Pattern → Where Used
+────────────────────────────────────────────────────────────────────────────────
+
+  Pattern / Algorithm                  | File(s)
+  ─────────────────────────────────────┼──────────────────────────────────────
+  bcrypt password hashing              | services/auth_service.py
+  HS256 JWT (stateless auth)           | services/auth_service.py
+  httpOnly + SameSite cookie           | api/auth.py
+  OAuth 2.0 Authorization Code Flow    | api/auth.py + auth_service.py
+  Account linking (identity merge)     | services/auth_service.py
+  Domain gating (@amzur.com allowlist) | services/auth_service.py
+  Row-Level Security (PostgreSQL RLS)  | alembic migration a1b2c3d4e5f6
+  Token-by-token LLM streaming        | services/chat_service.py
+  SSE (Server-Sent Events)             | api/chat.py
+  LCEL functional chain composition    | ai/chains/chat_chain.py
+  Sliding window memory eviction       | services/memory_service.py
+  Context budget trimming              | services/memory_service.py
+  Multimodal content blocks (VLM)      | services/attachment_service.py
+  Base64 image encoding                | services/attachment_service.py
+  PDF rasterisation (PyMuPDF)          | services/attachment_service.py
+  Document text extraction             | services/attachment_service.py
+  Circuit breaker (Redis)              | services/memory_repository.py
+  Fail-open / graceful degradation     | services/memory_repository.py
+  In-process fallback store            | services/memory_repository.py
+  Connection + operation timeout       | services/memory_repository.py
+  Redis TTL (key expiry)               | services/memory_repository.py
+  Layered architecture (N-tier)        | Entire codebase
+  Dependency injection (Depends)       | All routers
+  Repository pattern                   | services/memory_repository.py
+  Strategy pattern (storage)           | services/attachment_storage.py
+  Singleton pattern                    | ai/llm.py, service providers
+  Factory pattern                      | services/attachment_storage.py
+  Pending state / state machine        | models/attachment.py + service
+  Optimistic timestamp update          | services/thread_service.py
+  CORS middleware                      | app/main.py
+  MIME type allowlist validation       | services/attachment_service.py
+  Chunked file upload (streaming I/O)  | services/attachment_storage.py
+  UUID primary keys                    | All ORM models
+  Cascade delete (referential)         | All FK relationships
+  N+1 prevention (batch query)         | services/attachment_service.py
+  UTC timezone-aware timestamps        | All DateTime columns
+  Alembic schema migration             | alembic/versions/
+  LLM gateway / proxy routing          | ai/llm.py (all via LiteLLM)
+  Cost attribution (user metadata)     | Every AI call
+  Prompt engineering (templates)       | ai/prompts/*.txt
+
+================================================================================
+END OF DOCUMENT
+================================================================================
