@@ -17,6 +17,7 @@ class ChatThread(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
+    type: Mapped[str] = mapped_column(String(50), nullable=False, default="chat", server_default="chat", index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="New Chat")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False

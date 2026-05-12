@@ -9,6 +9,8 @@ export interface ChatMessage {
 
 export interface ChatRequest {
 	message: string;
+	session_id?: string | null;
+	attachment_ids?: string[];
 }
 
 export interface ChatResponse {
@@ -44,5 +46,71 @@ export interface ChatThread {
 	title: string;
 	created_at: string;
 	updated_at: string;
+}
+
+// ── File attachments ──────────────────────────────────────────────────────────
+
+export interface UploadedFile {
+	fileId: string;
+	filename: string;
+	contentType: string;
+	size: number;
+	isIndexed: boolean;
+	fileUrl?: string;
+	attachmentType?: "image" | "video" | "document" | "code" | "table" | "formula" | "file";
+}
+
+export type PendingFileStatus = "uploading" | "indexed" | "error";
+
+export interface PendingFile {
+	/** Local id used only in the UI list */
+	id: string;
+	file: File;
+	status: PendingFileStatus;
+	progress: number;
+	previewUrl?: string;
+	uploaded?: UploadedFile;
+	error?: string;
+}
+
+// Backward-compatible aliases used by existing optional panels/components.
+export type PendingAttachment = PendingFile;
+
+export type ImageStyle = "realistic" | "anime" | "digital-art" | "cinematic";
+export type ImageSize = "1024x1024" | "1024x1536" | "1536x1024";
+
+export interface ImageGenerateRequest {
+	prompt: string;
+	style: ImageStyle;
+	size: ImageSize;
+	imageCount: number;
+	threadId?: string;
+	sessionId?: string;
+}
+
+export interface GeneratedImageItem {
+	imageId: string;
+	imageUrl: string;
+	prompt: string;
+	style: ImageStyle;
+	size: ImageSize;
+	createdAt?: string;
+}
+
+export interface RagDocument {
+	documentId: string;
+	filename: string;
+	status: string;
+}
+
+export interface RagCitation {
+	filename: string;
+	page: number;
+	snippet?: string;
+}
+
+export interface RagResponse {
+	response: string;
+	citations: RagCitation[];
 }
 

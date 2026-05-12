@@ -15,6 +15,10 @@ from app.models.chat_thread import ChatThread
 _PROMPTS_DIR = Path(__file__).resolve().parents[1] / "ai" / "prompts"
 
 
+def load_chat_system_prompt() -> str:
+    return (_PROMPTS_DIR / "chat_system.txt").read_text(encoding="utf-8").strip()
+
+
 def _build_title_chain() -> StrOutputParser:
     prompt = ChatPromptTemplate.from_messages(
         [

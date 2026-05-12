@@ -1,9 +1,14 @@
 import uuid
+from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.db.session import get_db
+from app.models.generated_image import GeneratedImage
 from app.models.user import User
 from app.schemas.image import ImageGenerateRequest, ImageGenerateResponse
 from app.services.auth_service import get_current_user
@@ -45,4 +50,35 @@ async def generate_image(
         prompt=body.prompt,
         images=images,
         assistant_message=result.assistant_message,
+    )
+
+
+@router.get("/{image_id}/download")
+async def download_image(
+    image_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> FileResponse:
+    stmt = select(GeneratedImage).where(
+        GeneratedImage.id == image_id,
+        GeneratedImage.user_id == current_user.id,
+    )
+    image = (await db.execute(stmt)).scalar_one_or_none()
+    if image is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": "Generated image not found"},
+        )
+
+    image_path = Path(settings.IMAGE_OUTPUT_PATH) / image.storage_path
+    if not image_path.exists() or not image_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "file_missing", "message": "Image file is no longer available"},
+        )
+
+    return FileResponse(
+        path=str(image_path),
+        media_type="image/png",
+        filename=f"generated-{image.id}.png",
     )

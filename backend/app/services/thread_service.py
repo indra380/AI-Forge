@@ -8,7 +8,7 @@ from app.models.chat_thread import ChatThread
 
 
 async def create_thread(db: AsyncSession, user_id: uuid.UUID, title: str = "New Chat") -> ChatThread:
-    thread = ChatThread(user_id=user_id, title=title)
+    thread = ChatThread(user_id=user_id, title=title, type="chat")
     db.add(thread)
     await db.commit()
     await db.refresh(thread)
@@ -20,6 +20,7 @@ async def list_threads(db: AsyncSession, user_id: uuid.UUID) -> list[ChatThread]
         select(ChatThread)
         .where(ChatThread.user_id == user_id)
         .order_by(ChatThread.updated_at.desc())
+        .limit(5)
     )
     result = await db.execute(stmt)
     return list(result.scalars().all())

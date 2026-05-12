@@ -42,6 +42,11 @@ class ImageProvider:
 class OpenAIImageProvider(ImageProvider):
     provider_name = "openai"
 
+    @staticmethod
+    def _should_retry_with_fallback(exc: OpenAIError) -> bool:
+        text = str(exc).lower()
+        return "key_model_access_denied" in text or "key not allowed to access model" in text
+
     async def generate_images(
         self,
         *,
@@ -49,7 +54,7 @@ class OpenAIImageProvider(ImageProvider):
         count: int,
         user_email: str,
     ) -> list[ProviderImageResult]:
-        def _call_provider() -> list[ProviderImageResult]:
+        def _call_provider(model_name: str) -> list[ProviderImageResult]:
             payload_prompt = options.prompt
             if options.style.lower() != "realistic":
                 payload_prompt = f"Style: {options.style}. {payload_prompt}"
@@ -57,7 +62,7 @@ class OpenAIImageProvider(ImageProvider):
                 payload_prompt = f"{payload_prompt}\n\nAvoid: {options.negative_prompt}"
 
             response = openai_client.images.generate(
-                model=settings.IMAGE_GEN_MODEL,
+                model=model_name,
                 prompt=payload_prompt,
                 size=options.size,
                 n=count,
@@ -93,8 +98,18 @@ class OpenAIImageProvider(ImageProvider):
             return results
 
         try:
-            return await asyncio.to_thread(_call_provider)
+            return await asyncio.to_thread(_call_provider, settings.IMAGE_GEN_MODEL)
         except OpenAIError as exc:
+            fallback = settings.IMAGE_GEN_FALLBACK_MODEL
+            if (
+                fallback
+                and fallback != settings.IMAGE_GEN_MODEL
+                and self._should_retry_with_fallback(exc)
+            ):
+                try:
+                    return await asyncio.to_thread(_call_provider, fallback)
+                except OpenAIError as fallback_exc:
+                    raise RuntimeError(f"Image provider request failed: {fallback_exc}") from fallback_exc
             raise RuntimeError(f"Image provider request failed: {exc}") from exc
 
 

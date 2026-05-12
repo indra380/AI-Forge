@@ -35,9 +35,8 @@ export default function App() {
     );
   }, []);
 
-  const { messages, hasMessages, setMessages, activeThreadId, setActiveThreadId, sendMessage, sendMessageToThread, isStreaming } =
+  const { messages, hasMessages, setMessages, activeThreadId, setActiveThreadId, activeSessionId, activateThread, ensureComposerSession, sendMessageToThread, isStreaming } =
     useChat((title) => {
-      // onThreadRenamedRef in useChat always holds the latest activeThreadId via closure refresh
       if (activeThreadId) handleThreadRenamed(activeThreadId, title);
     });
 
@@ -69,7 +68,7 @@ export default function App() {
   }
 
   async function selectThread(thread: ChatThread) {
-    setActiveThreadId(thread.id);
+    activateThread(thread.id);
     const msgs = await getThreadMessages(thread.id);
     setMessages(msgs);
   }
@@ -78,7 +77,7 @@ export default function App() {
     const thread = await createThread();
     justCreatedRef.current = true;
     setThreads((prev) => [thread, ...prev]);
-    setActiveThreadId(thread.id);
+    activateThread(thread.id);
     setMessages([]);
   }
 
@@ -157,17 +156,16 @@ export default function App() {
     setActiveThreadId(null);
   }
 
-  async function handleSend(message: string) {
+  async function handleSend(message: string, attachmentIds: string[]) {
+    const sid = ensureComposerSession();
     if (!activeThreadId) {
-      // Auto-create a thread, then send directly with explicit threadId
-      // (cannot use sendMessage here — setActiveThreadId is async, state not yet updated)
       const thread = await createThread();
       justCreatedRef.current = true;
       setThreads((prev) => [thread, ...prev]);
-      setActiveThreadId(thread.id);
-      await sendMessageToThread(message, thread.id);
+      const threadSid = activateThread(thread.id);
+      await sendMessageToThread(message, thread.id, threadSid || sid, attachmentIds);
     } else {
-      await sendMessage(message);
+      await sendMessageToThread(message, activeThreadId, activeSessionId ?? sid, attachmentIds);
     }
   }
 
@@ -314,7 +312,12 @@ export default function App() {
           <ChatMessageList messages={messages} />
         )}
 
-        <ChatInputBar disabled={isStreaming} onSend={handleSend} />
+        <ChatInputBar
+          disabled={isStreaming}
+          sessionId={activeSessionId}
+          onEnsureSession={ensureComposerSession}
+          onSend={handleSend}
+        />
       </div>
     </div>
   );

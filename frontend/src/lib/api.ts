@@ -8,8 +8,13 @@ import type {
   ChatRequest,
   ChatStreamEvent,
   ChatThread,
+  GeneratedImageItem,
+  ImageGenerateRequest,
   LoginRequest,
+  RagResponse,
+  RagDocument,
   RegisterRequest,
+  UploadedFile,
 } from "../types";
 
 const api = axios.create({
@@ -44,6 +49,46 @@ const threadSchema = z.object({
   title: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
+});
+
+const uploadResponseSchema = z.object({
+  file_id: z.string(),
+  filename: z.string(),
+  content_type: z.string(),
+  size: z.number(),
+  is_indexed: z.boolean(),
+  file_url: z.string().nullable().optional(),
+  attachment_type: z.string().nullable().optional(),
+});
+
+const generatedImageSchema = z.object({
+  image_id: z.string(),
+  image_url: z.string(),
+  prompt: z.string(),
+  style: z.string(),
+  size: z.string(),
+  created_at: z.string().optional(),
+});
+
+const imageGenerateResponseSchema = z.object({
+  images: z.array(generatedImageSchema).default([]),
+});
+
+const ragUploadResponseSchema = z.object({
+  document_id: z.string(),
+  filename: z.string(),
+  status: z.string(),
+});
+
+const ragCitationSchema = z.object({
+  filename: z.string(),
+  page: z.number(),
+  chunk_index: z.number().optional(),
+});
+
+const ragChatResponseSchema = z.object({
+  response: z.string(),
+  citations: z.array(ragCitationSchema).default([]),
 });
 
 function getBaseUrl(): string {
@@ -106,6 +151,112 @@ export async function getThreadMessages(threadId: string): Promise<ChatMessage[]
     createdAt: item.created_at,
   }));
 }
+
+// ── File upload ───────────────────────────────────────────────────────────────
+
+export async function uploadFile(
+  sessionId: string,
+  file: File,
+  onProgress?: (pct: number) => void,
+): Promise<UploadedFile> {
+  const form = new FormData();
+  form.append("session_id", sessionId);
+  form.append("file", file);
+
+  const response = await api.post("/api/chat/upload", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    onUploadProgress: (event) => {
+      if (onProgress && event.total) {
+        onProgress(Math.round((event.loaded * 100) / event.total));
+      }
+    },
+  });
+
+  const parsed = uploadResponseSchema.parse(response.data);
+  return {
+    fileId: parsed.file_id,
+    filename: parsed.filename,
+    contentType: parsed.content_type,
+    size: parsed.size,
+    isIndexed: parsed.is_indexed,
+    fileUrl: parsed.file_url ?? undefined,
+    attachmentType:
+      (parsed.attachment_type as UploadedFile["attachmentType"] | null | undefined) ?? undefined,
+  };
+}
+
+export async function deleteUploadedFile(fileId: string, sessionId: string): Promise<void> {
+  await api.delete(`/api/chat/upload/${fileId}`, { params: { session_id: sessionId } });
+}
+
+// ── Image generation ─────────────────────────────────────────────────────────
+
+export async function generateImages(payload: ImageGenerateRequest): Promise<GeneratedImageItem[]> {
+  const response = await api.post("/api/image/generate", {
+    prompt: payload.prompt,
+    style: payload.style,
+    size: payload.size,
+    image_count: payload.imageCount,
+    thread_id: payload.threadId,
+    session_id: payload.sessionId,
+  });
+
+  const parsed = imageGenerateResponseSchema.parse(response.data);
+  const baseUrl = getBaseUrl();
+  return parsed.images.map((image) => ({
+    imageId: image.image_id,
+    imageUrl:
+      image.image_url.startsWith("http")
+        ? image.image_url
+        : `${baseUrl}${image.image_url.startsWith("/") ? "" : "/"}${image.image_url}`,
+    prompt: image.prompt,
+    style: image.style as GeneratedImageItem["style"],
+    size: image.size as GeneratedImageItem["size"],
+    createdAt: image.created_at,
+  }));
+}
+
+// ── Classic single-document RAG panel ───────────────────────────────────────
+
+export async function ragUploadPdf(sessionId: string, file: File): Promise<RagDocument> {
+  const form = new FormData();
+  form.append("session_id", sessionId);
+  form.append("file", file);
+
+  const response = await api.post("/api/rag/upload", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+
+  const parsed = ragUploadResponseSchema.parse(response.data);
+  return {
+    documentId: parsed.document_id,
+    filename: parsed.filename,
+    status: parsed.status,
+  };
+}
+
+export async function ragAsk(
+  sessionId: string,
+  documentId: string,
+  message: string,
+): Promise<RagResponse> {
+  const response = await api.post("/api/rag/chat", {
+    session_id: sessionId,
+    document_id: documentId,
+    message,
+  });
+
+  const parsed = ragChatResponseSchema.parse(response.data);
+  return {
+    response: parsed.response,
+    citations: parsed.citations.map((citation) => ({
+      filename: citation.filename,
+      page: citation.page,
+    })),
+  };
+}
+
+// ── Streaming chat ────────────────────────────────────────────────────────────
 
 export async function streamChat(
   threadId: string,

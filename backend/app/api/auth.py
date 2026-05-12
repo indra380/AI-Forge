@@ -94,26 +94,35 @@ async def google_callback(
             detail={"error": "not_configured", "message": "Google OAuth not configured"},
         )
 
-    async with httpx.AsyncClient() as client:
-        token_response = await client.post(
-            _GOOGLE_TOKEN_URL,
-            data={
-                "code": code,
-                "client_id": settings.GOOGLE_CLIENT_ID,
-                "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                "redirect_uri": settings.GOOGLE_REDIRECT_URI,
-                "grant_type": "authorization_code",
-            },
-        )
-        token_response.raise_for_status()
-        tokens = token_response.json()
+    try:
+        async with httpx.AsyncClient() as client:
+            token_response = await client.post(
+                _GOOGLE_TOKEN_URL,
+                data={
+                    "code": code,
+                    "client_id": settings.GOOGLE_CLIENT_ID,
+                    "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                    "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+                    "grant_type": "authorization_code",
+                },
+            )
+            token_response.raise_for_status()
+            tokens = token_response.json()
 
-        userinfo_response = await client.get(
-            _GOOGLE_USERINFO_URL,
-            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+            userinfo_response = await client.get(
+                _GOOGLE_USERINFO_URL,
+                headers={"Authorization": f"Bearer {tokens['access_token']}"},
+            )
+            userinfo_response.raise_for_status()
+            userinfo = userinfo_response.json()
+    except httpx.HTTPStatusError:
+        error_msg = urllib.parse.quote(
+            "Google login failed. Check GOOGLE_REDIRECT_URI and OAuth client configuration."
         )
-        userinfo_response.raise_for_status()
-        userinfo = userinfo_response.json()
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/?auth_error={error_msg}")
+    except Exception:
+        error_msg = urllib.parse.quote("Google login failed due to a network or server issue.")
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/?auth_error={error_msg}")
 
     email: str = userinfo.get("email", "")
     google_id: str = userinfo.get("sub", "")

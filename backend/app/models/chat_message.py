@@ -31,3 +31,5 @@ class ChatMessage(Base):
 
     user = relationship("User", back_populates="messages")
     thread = relationship("ChatThread", back_populates="messages")
+    attachments = relationship("Attachment", back_populates="message")
+    generated_images = relationship("GeneratedImage", back_populates="message")
