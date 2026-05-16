@@ -46,7 +46,7 @@ from app.services.thread_service import (
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Intent detection helpers
 # ---------------------------------------------------------------------------
 
 def _is_image_request(text: str) -> bool:
@@ -60,6 +60,50 @@ def _is_image_request(text: str) -> bool:
         r"^/imagine\b",
     ]
     return any(re.search(pattern, lowered) for pattern in image_patterns)
+
+
+def _is_connect_db_command(text: str) -> bool:
+    return bool(re.match(r"^/connect[\-_]?db\b", text.strip(), re.IGNORECASE))
+
+
+def _is_agent_command(text: str) -> bool:
+    return text.strip().lower().startswith("/agent ")
+
+
+def _is_validate_command(text: str, has_images: bool) -> bool:
+    lowered = text.lower()
+    validation_keywords = ["validate", "check rules", "verify", "compliance", "rule check"]
+    return has_images and any(k in lowered for k in validation_keywords)
+
+
+def _is_excel_question(text: str, has_table: bool) -> bool:
+    """Return True if session has table/spreadsheet and message looks like data question."""
+    if not has_table:
+        return False
+    data_keywords = [
+        "total", "sum", "average", "mean", "count", "how many", "highest", "lowest",
+        "maximum", "minimum", "top", "bottom", "trend", "sales", "revenue", "profit",
+        "column", "row", "sheet", "filter", "sort", "group", "pivot",
+    ]
+    lowered = text.lower()
+    return any(k in lowered for k in data_keywords)
+
+
+def _is_db_question(text: str, has_db: bool) -> bool:
+    """Return True if thread has DB and message looks like a database question."""
+    if not has_db:
+        return False
+    db_keywords = [
+        "how many", "count", "show me", "list", "find", "what are", "which",
+        "total", "sum", "average", "top", "recent", "latest", "oldest",
+        "users", "customers", "orders", "products", "revenue", "sales",
+    ]
+    lowered = text.lower()
+    # Skip generic conversational messages
+    skip_patterns = [r"^(hi|hello|hey|thanks|thank you|ok|okay|sure|yes|no)\b"]
+    if any(re.match(p, lowered) for p in skip_patterns):
+        return False
+    return any(k in lowered for k in db_keywords)
 
 
 def _extract_image_prompt(text: str) -> str:
@@ -296,6 +340,7 @@ async def post_message(
     )
 
 
+
 # ---------------------------------------------------------------------------
 # Streaming chat (with automatic multi-PDF RAG injection)
 # ---------------------------------------------------------------------------
@@ -329,8 +374,14 @@ async def stream_thread(
             detail={"error": "missing_session", "message": "session_id is required when attachment_ids are provided"},
         )
 
+    # ── Gather attachment metadata ──────────────────────────────────────────
     attachment_context = ""
     multimodal_user_text: str | list[dict[str, object]] = user_text
+    has_images = False
+    has_tables = False
+    image_attachment_paths: list[str] = []
+    table_attachment_paths: list[str] = []
+
     if attachment_ids and session_id is not None:
         attachment_context = await attachment_service.build_attachment_context(
             db,
@@ -345,6 +396,201 @@ async def stream_thread(
             attachment_ids=attachment_ids,
             message_text=user_text,
         )
+        # Collect attachment types and paths for advanced routing
+        for att_id in attachment_ids:
+            att_uuid = uuid.UUID(str(att_id))
+            result = await db.execute(
+                select(Attachment).where(
+                    Attachment.id == att_uuid,
+                    Attachment.user_id == current_user.id,
+                )
+            )
+            att = result.scalar_one_or_none()
+            if att:
+                if att.attachment_type == "image":
+                    has_images = True
+                    image_attachment_paths.append(att.storage_path)
+                elif att.attachment_type == "table":
+                    has_tables = True
+                    table_attachment_paths.append(att.storage_path)
+
+    # Thread context (DB connection)
+    thread_context: dict = thread.context or {}
+    active_db_id: str | None = thread_context.get("db_connection_id")
+
+    # ── Helper: save user message & link attachments ────────────────────────
+    async def _save_user_message(text: str) -> None:
+        user_row = await save_chat_message(db, current_user.id, thread_id, "user", text)
+        if attachment_ids and session_id is not None:
+            linked = await attachment_service.attach_uploaded_files_to_message(
+                db,
+                user_id=current_user.id,
+                session_id=session_id,
+                message_id=user_row.id,
+                attachment_ids=attachment_ids,
+            )
+            base_url = str(request.base_url).rstrip("/")
+            previews = [
+                _render_attachment_markdown(
+                    base_url=base_url,
+                    file_url=attachment_service.to_response(item).file_url,
+                    original_name=item.original_name,
+                    attachment_type=item.attachment_type,
+                )
+                for item in linked
+            ]
+            user_row.content = _message_with_attachment_previews(
+                message_text=text, previews=previews
+            )
+            await db.commit()
+
+    # ── Helper: stream a prebuilt response ───────────────────────────────────
+    async def _simple_stream(response_text: str, is_first_msg: bool = is_first) -> AsyncGenerator[str, None]:
+        await save_chat_message(db, current_user.id, thread_id, "assistant", response_text)
+        await touch_thread(db, thread)
+        yield f"data: {json.dumps({'type': 'token', 'content': response_text})}\n\n"
+        if is_first_msg and thread.title in ("New Chat", ""):
+            try:
+                new_title = await generate_thread_title(body.message, current_user.email)
+                renamed = await rename_thread(db, thread_id, current_user.id, new_title)
+                if renamed:
+                    yield f"data: {json.dumps({'type': 'thread_renamed', 'content': renamed.title})}\n\n"
+            except Exception:
+                pass
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    # ── /connect-db command ───────────────────────────────────────────────────
+    if _is_connect_db_command(user_text):
+        from app.services.database_service import parse_connect_command, save_db_connection, SUPPORTED_DB_TYPES
+        await _save_user_message(body.message)
+        try:
+            params = parse_connect_command(user_text)
+            conn = await save_db_connection(
+                db,
+                user_id=current_user.id,
+                name=params.get("name", "My Database"),
+                db_type=params.get("db_type", "postgresql"),
+                host=params.get("host"),
+                port=int(params["port"]) if "port" in params else None,
+                database=params.get("database"),
+                username=params.get("username"),
+                password=params.get("password"),
+                full_url=params.get("full_url"),
+            )
+            # Activate for current thread
+            ctx = thread.context or {}
+            ctx["db_connection_id"] = str(conn.id)
+            thread.context = ctx
+            await db.commit()
+            response = (
+                f"✅ Database **{conn.name}** ({conn.db_type}) connected successfully!\n\n"
+                f"I've activated this connection for this thread. "
+                f"You can now ask questions about your data in plain English.\n\n"
+                f"**Connection ID:** `{conn.id}`\n\n"
+                f"Try asking: *\"Show me all tables\"* or *\"How many records are in the users table?\"*"
+            )
+        except Exception as exc:
+            response = (
+                f"❌ Failed to connect: {exc}\n\n"
+                "Use the format:\n"
+                "```\n/connect-db type=postgresql host=localhost port=5432 database=mydb user=admin password=secret name=\"My DB\"\n```\n"
+                "Or with a full URL:\n"
+                "```\n/connect-db postgresql://user:pass@host:5432/dbname name=\"My DB\"\n```"
+            )
+        return StreamingResponse(_simple_stream(response), media_type="text/event-stream")
+
+    # ── /agent command ────────────────────────────────────────────────────────
+    if _is_agent_command(user_text):
+        from app.services.agent_service import run_agent
+
+        await _save_user_message(body.message)
+        task = re.sub(r"^/agent\s+", "", user_text, flags=re.IGNORECASE).strip()
+        chat_history = "\n".join(
+            f"{'User' if m.role == 'user' else 'Assistant'}: {m.content[:300]}"
+            for m in existing[-6:]
+        )
+        result = await run_agent(task, user_email=current_user.email, chat_history=chat_history)
+
+        parts = [f"**Task:** {task}\n"]
+        if result["steps"]:
+            parts.append("**Reasoning steps:**")
+            for step in result["steps"]:
+                parts.append(f"> {step}")
+        parts.append(f"\n**Answer:** {result['answer']}")
+        response = "\n\n".join(parts)
+
+        return StreamingResponse(_simple_stream(response), media_type="text/event-stream")
+
+    # ── Image validation ──────────────────────────────────────────────────────
+    if _is_validate_command(user_text, has_images) and image_attachment_paths:
+        from app.services.image_validation_service import validate_image, validate_image_freeform
+        from app.services.rule_engine_service import list_rules
+
+        await _save_user_message(body.message)
+
+        # Check if user referenced a rule by name, else do freeform validation
+        user_rules = await list_rules(db, current_user.id)
+        matched_rule = None
+        for r in user_rules:
+            if r.name.lower() in user_text.lower():
+                matched_rule = r
+                break
+
+        all_responses: list[str] = []
+        for img_path in image_attachment_paths:
+            if matched_rule:
+                result = await validate_image(img_path, matched_rule, current_user.email)
+            else:
+                result = await validate_image_freeform(img_path, user_text, current_user.email)
+
+            # Format as structured block for frontend rendering
+            result_json = json.dumps(result)
+            all_responses.append(f"```validation\n{result_json}\n```")
+
+        response = "\n\n".join(all_responses)
+        return StreamingResponse(_simple_stream(response), media_type="text/event-stream")
+
+    # ── Excel / CSV analysis ──────────────────────────────────────────────────
+    if _is_excel_question(user_text, has_tables) and table_attachment_paths:
+        from app.services.excel_service import analyze_dataframe
+
+        await _save_user_message(body.message)
+        file_path = table_attachment_paths[0]  # Use first table attachment
+        result = await analyze_dataframe(file_path, user_text, current_user.email)
+
+        parts: list[str] = []
+        if result["data_summary"]:
+            parts.append(f"**Dataset overview:**\n{result['data_summary']}")
+        parts.append(f"**Analysis:**\n{result['answer']}")
+        if result.get("error"):
+            parts.append(f"⚠️ Note: {result['error']}")
+        response = "\n\n".join(parts)
+
+        return StreamingResponse(_simple_stream(response), media_type="text/event-stream")
+
+    # ── NL-to-SQL (if DB connected to thread) ─────────────────────────────────
+    if active_db_id and _is_db_question(user_text, has_db=True):
+        from app.services.database_service import get_db_connection
+        from app.services.sql_agent_service import run_nl_to_sql
+
+        conn = await get_db_connection(db, uuid.UUID(active_db_id), current_user.id)
+        if conn:
+            await _save_user_message(body.message)
+            result = await run_nl_to_sql(conn, user_text, current_user.email)
+
+            parts = []
+            if result.get("error"):
+                parts.append(f"⚠️ Error: {result['error']}")
+            else:
+                if result["answer"]:
+                    parts.append(result["answer"])
+                if result["sql"]:
+                    parts.append(f"The SQL query used for this is:\n```sql\n{result['sql']}\n```")
+                else:
+                    parts.append("The SQL query used for this is: _Not available._")
+            response = "\n\n".join(parts)
+
+            return StreamingResponse(_simple_stream(response), media_type="text/event-stream")
 
     # ── Unified mode: image generation from the same chat box ───────────────
     if _is_image_request(user_text):

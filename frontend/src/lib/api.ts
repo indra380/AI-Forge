@@ -8,13 +8,25 @@ import type {
   ChatRequest,
   ChatStreamEvent,
   ChatThread,
+  DbConnection,
+  DbConnectionCreate,
   GeneratedImageItem,
   ImageGenerateRequest,
+  ImageRule,
   LoginRequest,
   RagResponse,
   RagDocument,
   RegisterRequest,
+  RuleItem,
   UploadedFile,
+  Dataset,
+  DataUploadResponse,
+  DataGoogleSheetResponse,
+  DataQueryResponse,
+  ResearchQueryRequest,
+  ResearchFollowupRequest,
+  ResearchFollowupResponse,
+  ResearchMessageItem,
 } from "../types";
 
 const api = axios.create({
@@ -294,6 +306,177 @@ export async function streamChat(
       onEvent(event);
     }
   }
+}
+
+// ── Database connections ─────────────────────────────────────────────────────
+
+const dbConnectionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  db_type: z.string(),
+  host: z.string().nullable().optional(),
+  port: z.number().nullable().optional(),
+  database: z.string().nullable().optional(),
+  username: z.string().nullable().optional(),
+  created_at: z.string(),
+});
+
+export async function createDbConnection(payload: DbConnectionCreate): Promise<DbConnection> {
+  const response = await api.post("/api/agent/db-connections", payload);
+  return dbConnectionSchema.parse(response.data) as DbConnection;
+}
+
+export async function getDbConnections(): Promise<DbConnection[]> {
+  const response = await api.get("/api/agent/db-connections");
+  return z.array(dbConnectionSchema).parse(response.data) as DbConnection[];
+}
+
+export async function deleteDbConnection(connectionId: string): Promise<void> {
+  await api.delete(`/api/agent/db-connections/${connectionId}`);
+}
+
+export async function setThreadDbConnection(
+  threadId: string,
+  connectionId: string
+): Promise<void> {
+  await api.post(`/api/agent/threads/${threadId}/set-db`, null, {
+    params: { connection_id: connectionId },
+  });
+}
+
+export async function clearThreadDbConnection(threadId: string): Promise<void> {
+  await api.delete(`/api/agent/threads/${threadId}/set-db`);
+}
+
+export async function getDbSchema(connectionId: string): Promise<string> {
+  const response = await api.get(`/api/agent/db-connections/${connectionId}/schema`);
+  return (response.data as { schema: string }).schema;
+}
+
+// ── Image rules ──────────────────────────────────────────────────────────────
+
+const imageRuleSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().nullable().optional(),
+  rules: z.array(z.object({
+    field: z.string(),
+    operator: z.string(),
+    value: z.unknown().optional(),
+    type: z.string().optional(),
+    label: z.string().optional(),
+  })),
+  created_at: z.string(),
+});
+
+export async function getImageRules(): Promise<ImageRule[]> {
+  const response = await api.get("/api/agent/image-rules");
+  return z.array(imageRuleSchema).parse(response.data) as ImageRule[];
+}
+
+export async function createImageRule(payload: {
+  name: string;
+  description?: string;
+  rules: RuleItem[];
+}): Promise<ImageRule> {
+  const response = await api.post("/api/agent/image-rules", payload);
+  return imageRuleSchema.parse(response.data) as ImageRule;
+}
+
+export async function deleteImageRule(ruleId: string): Promise<void> {
+  await api.delete(`/api/agent/image-rules/${ruleId}`);
+}
+
+// ── Data Analysis ──────────────────────────────────────────────────────────
+
+export async function uploadDataset(
+  file: File,
+  onProgress?: (pct: number) => void,
+): Promise<DataUploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await api.post("/api/data/upload", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    onUploadProgress: (event) => {
+      if (onProgress && event.total) {
+        onProgress(Math.round((event.loaded * 100) / event.total));
+      }
+    },
+  });
+  return response.data as DataUploadResponse;
+}
+
+export async function connectGoogleSheet(
+  google_sheet_url: string,
+  worksheet_name?: string,
+): Promise<DataGoogleSheetResponse> {
+  const response = await api.post("/api/data/google-sheet", {
+    google_sheet_url,
+    worksheet_name: worksheet_name ?? null,
+  });
+  return response.data as DataGoogleSheetResponse;
+}
+
+export async function queryDataset(
+  dataset_id: string,
+  question: string,
+  history?: Array<{ role: string; content: string }>,
+  sheet_name?: string,
+): Promise<DataQueryResponse> {
+  const response = await api.post("/api/data/query", {
+    dataset_id,
+    question,
+    history: history ?? [],
+    sheet_name: sheet_name ?? null,
+  });
+  return response.data as DataQueryResponse;
+}
+
+export async function listDatasets(): Promise<Dataset[]> {
+  const response = await api.get("/api/data/datasets");
+  return (response.data as { datasets: Dataset[] }).datasets;
+}
+
+export async function deleteDataset(dataset_id: string): Promise<void> {
+  await api.delete(`/api/data/${dataset_id}`);
+}
+
+// ── Research Digest Agent ────────────────────────────────────────────────────
+
+export async function startResearch(
+  payload: ResearchQueryRequest
+): Promise<Response> {
+  // Use fetch to POST and get Response with streaming body
+  const response = await fetch(
+    `${api.defaults.baseURL}/api/research/digest`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      credentials: "include",
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Research API error: ${response.statusText}`);
+  }
+
+  return response;
+}
+
+export async function askResearchFollowup(
+  threadId: string,
+  payload: ResearchFollowupRequest
+): Promise<ResearchFollowupResponse> {
+  const response = await api.post(`/api/research/threads/${threadId}/ask`, payload);
+  return response.data as ResearchFollowupResponse;
+}
+
+export async function getResearchMessages(threadId: string): Promise<ResearchMessageItem[]> {
+  const response = await api.get(`/api/research/threads/${threadId}/messages`);
+  return response.data as ResearchMessageItem[];
 }
 
 export default api;

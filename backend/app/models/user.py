@@ -29,3 +29,9 @@ class User(Base):
     generated_images = relationship(
         "GeneratedImage", back_populates="user", cascade="all, delete-orphan"
     )
+    db_connections = relationship(
+        "DbConnection", back_populates="user", cascade="all, delete-orphan"
+    )
+    image_rules = relationship(
+        "ImageRule", back_populates="user", cascade="all, delete-orphan"
+    )

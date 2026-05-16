@@ -5,6 +5,9 @@ import type { FormEvent } from "react";
 import { ChatInputBar } from "./components/chat/ChatInputBar";
 import { ChatMessageList } from "./components/chat/ChatMessageList";
 import { ThreadSidebar } from "./components/chat/ThreadSidebar";
+import { DatabaseConnectModal } from "./components/chat/DatabaseConnectModal";
+import { DataAnalysisPanel } from "./components/chat/DataAnalysisPanel";
+import { ResearchDigestPanel } from "./components/chat/ResearchDigestPanel";
 import { useChat } from "./hooks/useChat";
 import {
   createThread,
@@ -18,7 +21,7 @@ import {
   register,
   renameThread,
 } from "./lib/api";
-import type { AuthUser, ChatThread } from "./types";
+import type { AuthUser, ChatThread, DbConnection } from "./types";
 
 export default function App() {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -28,6 +31,9 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
+  const [showDbModal, setShowDbModal] = useState(false);
+  const [activeDbConnection, setActiveDbConnection] = useState<DbConnection | null>(null);
+  const [view, setView] = useState<"chat" | "data" | "research">("chat");
 
   const handleThreadRenamed = useCallback((threadId: string, title: string) => {
     setThreads((prev) =>
@@ -273,12 +279,56 @@ export default function App() {
               <h1 className="text-lg font-semibold tracking-tight">Amzur AI Chat</h1>
               <p className="text-xs text-slate-500">{user.email}</p>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               {isStreaming && (
                 <span className="rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white">
                   Streaming…
                 </span>
               )}
+              {activeDbConnection && (
+                <span className="flex items-center gap-1 rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-700">
+                  🗄️ {activeDbConnection.name}
+                  <button
+                    onClick={() => setActiveDbConnection(null)}
+                    className="ml-1 text-emerald-500 hover:text-emerald-700"
+                    title="Disconnect"
+                  >
+                    ✕
+                  </button>
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => setView((v) => (v === "data" ? "chat" : "data"))}
+                title="Data Analysis"
+                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                  view === "data"
+                    ? "border-indigo-400 bg-indigo-600 text-white"
+                    : "border-slate-300 text-slate-700 hover:bg-slate-100"
+                }`}
+              >
+                📊 Data
+              </button>
+              <button
+                type="button"
+                onClick={() => setView((v) => (v === "research" ? "chat" : "research"))}
+                title="Research Digest"
+                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                  view === "research"
+                    ? "border-purple-400 bg-purple-600 text-white"
+                    : "border-slate-300 text-slate-700 hover:bg-slate-100"
+                }`}
+              >
+                🔬 Research
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowDbModal(true)}
+                title="Connect Database"
+                className="rounded-full border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+              >
+                🗄️ DB
+              </button>
               <button
                 type="button"
                 onClick={handleLogout}
@@ -290,13 +340,31 @@ export default function App() {
           </div>
         </header>
 
-        {!activeThreadId ? (
-          <section className="flex flex-1 items-center justify-center">
-            <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
-              <h2 className="text-lg font-semibold">Start a new chat</h2>
+        {view === "data" ? (
+          <DataAnalysisPanel />
+        ) : view === "research" ? (
+          <ResearchDigestPanel />
+        ) : !activeThreadId ? (
+          <section className="flex flex-1 items-center justify-center p-6">
+            <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm max-w-lg w-full">
+              <h2 className="text-lg font-semibold">Welcome to Amzur AI Chat</h2>
               <p className="mt-2 text-sm text-slate-500">
-                Type a message below or click <strong>+ New</strong> in the sidebar.
+                Your unified AI assistant. Start a new chat or try one of these:
               </p>
+              <div className="mt-4 grid grid-cols-2 gap-2 text-left">
+                {[
+                  { icon: "🗄️", label: "Query a database", hint: "Click DB button → connect → ask questions naturally" },
+                  { icon: "📊", label: "Analyze spreadsheets", hint: "Upload Excel/CSV and ask data questions" },
+                  { icon: "🖼️", label: "Validate images", hint: "Upload an image and type validation rules" },
+                  { icon: "🤖", label: "AI Agent", hint: "Type /agent followed by any task" },
+                  { icon: "📄", label: "PDF Q&A", hint: "Upload a PDF and ask questions about it" },
+                ].map((item) => (
+                  <div key={item.label} className="rounded-xl border border-slate-100 p-3">
+                    <div className="text-base">{item.icon} <span className="font-medium text-slate-700 text-sm">{item.label}</span></div>
+                    <div className="mt-0.5 text-xs text-slate-400">{item.hint}</div>
+                  </div>
+                ))}
+              </div>
             </div>
           </section>
         ) : !hasMessages ? (
@@ -312,13 +380,26 @@ export default function App() {
           <ChatMessageList messages={messages} />
         )}
 
-        <ChatInputBar
-          disabled={isStreaming}
-          sessionId={activeSessionId}
-          onEnsureSession={ensureComposerSession}
-          onSend={handleSend}
-        />
+        {view === "chat" && (
+          <ChatInputBar
+            disabled={isStreaming}
+            sessionId={activeSessionId}
+            onEnsureSession={ensureComposerSession}
+            onSend={handleSend}
+          />
+        )}
       </div>
+
+      {showDbModal && (
+        <DatabaseConnectModal
+          threadId={activeThreadId}
+          onClose={() => setShowDbModal(false)}
+          onConnected={(conn) => {
+            setActiveDbConnection(conn);
+            setShowDbModal(false);
+          }}
+        />
+      )}
     </div>
   );
 }

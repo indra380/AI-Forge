@@ -39,6 +39,7 @@ class Settings(BaseSettings):
 
     # ChromaDB / RAG
     CHROMA_DB_PATH: str = "./chroma_db"
+    CHROMA_ANONYMIZED_TELEMETRY: bool = False
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
     TOP_K_RESULTS: int = 8
@@ -89,6 +90,10 @@ class Settings(BaseSettings):
         "text/x-sql",
     ]
     ATTACHMENT_FORMULA_MIME_TYPES: list[str] = ["application/x-tex", "text/plain"]
+
+    # NL-to-SQL / agent settings
+    DATABASE_QUERY_TIMEOUT: int = 30
+    MAX_SQL_ROWS: int = 500
 
     # Short-term memory tuning
     MAX_HISTORY_MESSAGES: int = 40

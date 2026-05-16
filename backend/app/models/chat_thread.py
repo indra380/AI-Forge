@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, JSON, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,6 +19,8 @@ class ChatThread(Base):
     )
     type: Mapped[str] = mapped_column(String(50), nullable=False, default="chat", server_default="chat", index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="New Chat")
+    # Stores thread-level context: {db_connection_id, agent_mode}
+    context: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )

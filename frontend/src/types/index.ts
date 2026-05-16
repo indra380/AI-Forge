@@ -114,3 +114,149 @@ export interface RagResponse {
 	citations: RagCitation[];
 }
 
+// ── Database connections ──────────────────────────────────────────────────────
+
+export interface DbConnection {
+	id: string;
+	name: string;
+	db_type: string;
+	host?: string | null;
+	port?: number | null;
+	database?: string | null;
+	username?: string | null;
+	created_at: string;
+}
+
+export interface DbConnectionCreate {
+	name: string;
+	db_type: string;
+	host?: string;
+	port?: number;
+	database?: string;
+	username?: string;
+	password?: string;
+	full_url?: string;
+}
+
+// ── Data analysis ────────────────────────────────────────────────────────────
+
+export interface Dataset {
+  dataset_id: string;
+  filename: string;
+  rows: number;
+  columns: number;
+  sheets: string[];
+  created_at: string;
+  source_url?: string | null;
+}
+
+export interface DataUploadResponse {
+  dataset_id: string;
+  filename: string;
+  rows: number;
+  columns: number;
+  sheets: string[];
+}
+
+export interface DataGoogleSheetResponse {
+  dataset_id: string;
+  sheet_title: string;
+  rows: number;
+  columns: number;
+  sheets: string[];
+}
+
+export interface DataQueryResponse {
+  answer: string;
+  code: string;
+  data_summary: string;
+  error?: string | null;
+}
+
+export interface DataMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  code?: string;
+}
+
+// ── Research digest agent ────────────────────────────────────────────────────
+
+export interface ResearchQueryRequest {
+  query: string;
+  max_papers?: number;
+	thread_id?: string;
+}
+
+export interface PaperReference {
+  arxiv_id: string;
+  title: string;
+  authors: string[];
+  published: string;
+  url: string;
+  summary: string;
+}
+
+export interface ResearchStreamEvent {
+  type: "searching" | "analyzing" | "complete" | "error";
+  message: string;
+  papers_found?: number;
+  current_paper?: PaperReference;
+}
+
+export interface DigestResult {
+	thread_id: string;
+  query: string;
+  summary: string;
+	summary_display?: string;
+  papers: PaperReference[];
+  trends: string[];
+	keywords?: string[];
+	key_findings?: string;
+	consensus_view?: string;
+	open_questions?: string;
+	confidence?: {
+		level?: string;
+		description?: string;
+		maturity?: string;
+		sample_size?: number;
+		recent_activity?: number;
+	};
+  synthesis: string;
+  total_papers_analyzed: number;
+}
+
+export interface ResearchFollowupRequest {
+	question: string;
+}
+
+export interface ResearchFollowupResponse {
+	thread_id: string;
+	answer: string;
+}
+
+export interface ResearchMessageItem {
+	id: string;
+	role: "user" | "assistant";
+	content: string;
+	created_at: string;
+}
+
+// ── Image rules ──────────────────────────────────────────────────────────────
+
+export interface RuleItem {
+	field: string;
+	operator: string;
+	value?: unknown;
+	type?: string;
+	label?: string;
+}
+
+export interface ImageRule {
+	id: string;
+	name: string;
+	description?: string | null;
+	rules: RuleItem[];
+	created_at: string;
+}
+

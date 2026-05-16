@@ -6,6 +6,7 @@ import logging
 import re
 
 import chromadb
+from chromadb.config import Settings as ChromaSettings
 
 from app.core.config import settings
 
@@ -38,7 +39,13 @@ class ChromaService:
     """
 
     def __init__(self) -> None:
-        self._client = chromadb.PersistentClient(path=settings.CHROMA_DB_PATH)
+        self._client = chromadb.PersistentClient(
+            path=settings.CHROMA_DB_PATH,
+            settings=ChromaSettings(
+                anonymized_telemetry=settings.CHROMA_ANONYMIZED_TELEMETRY,
+                chroma_product_telemetry_impl="app.services.chroma_telemetry.NoOpProductTelemetryClient",
+            ),
+        )
 
     def _get_collection(self, session_id: str) -> chromadb.Collection:
         return self._client.get_or_create_collection(name=_collection_name(session_id))
