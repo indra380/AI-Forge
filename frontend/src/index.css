@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.chat-markdown p {
+  margin: 0.4rem 0;
+}
+
+.chat-markdown p:first-child {
+  margin-top: 0;
+}
+
+.chat-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3 {
+  margin: 0.8rem 0 0.35rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.chat-markdown h1 {
+  font-size: 1.1rem;
+}
+
+.chat-markdown h2 {
+  font-size: 1rem;
+}
+
+.chat-markdown h3 {
+  font-size: 0.95rem;
+}
+
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0.5rem 0;
+  padding-left: 1.2rem;
+}
+
+.chat-markdown li {
+  margin: 0.18rem 0;
+}
+
+.chat-markdown blockquote {
+  margin: 0.7rem 0;
+  border-left: 3px solid rgb(148 163 184);
+  background: rgb(248 250 252);
+  padding: 0.45rem 0.7rem;
+  color: rgb(51 65 85);
+  border-radius: 0.35rem;
+}
+
+.chat-markdown hr {
+  border: none;
+  border-top: 1px solid rgb(226 232 240);
+  margin: 0.85rem 0;
+}
+
+.chat-markdown-user blockquote {
+  border-left-color: rgb(148 163 184);
+  background: rgba(255, 255, 255, 0.1);
+  color: rgb(226 232 240);
+}

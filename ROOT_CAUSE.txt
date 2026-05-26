@@ -1,0 +1,92 @@
+ROOT CAUSE ANALYSIS — Google Sign-In / Login Internal Server Error
+==================================================================
+Date: May 7, 2026
+
+
+SYMPTOM
+-------
+Clicking "Sign in with Google" or submitting the login form returned
+HTTP 500 Internal Server Error.
+
+
+ROOT CAUSES (in order of discovery)
+-------------------------------------
+
+1. DATABASE_URL — Special character '#' in password
+   -------------------------------------------------
+   The original password contained '#', which dotenv treats as a
+   comment marker. This silently truncated the DATABASE_URL value,
+   corrupting the host/port parsing and causing asyncpg to fail
+   DNS resolution entirely.
+
+   Fix: URL-encode '#' as %23 in the password inside DATABASE_URL.
+
+
+2. DATABASE_URL — Direct Supabase host is IPv6-only
+   --------------------------------------------------
+   The direct connection host (db.rzdswmpmdxvbtoggzdrv.supabase.co)
+   resolves only to an IPv6 address (2406:da1a:82a:9d02:...).
+   This machine's network does not route IPv6 to TCP port 5432,
+   so every direct connection attempt failed with:
+
+       socket.gaierror: [Errno 11001] getaddrinfo failed
+
+   Fix: Switch DATABASE_URL to the Supabase Session Pooler host
+        (aws-1-ap-south-1.pooler.supabase.com:5432), which resolves
+        to IPv4 addresses and is reachable from this network.
+
+
+3. asyncpg incompatibility with 'sslmode' URL parameter
+   ------------------------------------------------------
+   After switching to the pooler host, sslmode=require was appended
+   to the DATABASE_URL. asyncpg does not support sslmode as a URL
+   query parameter and raises:
+
+       TypeError: connect() got an unexpected keyword argument 'sslmode'
+
+   Fix: Remove sslmode from the URL and pass SSL via SQLAlchemy
+        connect_args={"ssl": "require"} in both:
+          - app/db/session.py  (runtime engine)
+          - alembic/env.py     (migration engine)
+
+
+4. Google OAuth callback — unhandled provider errors
+   ---------------------------------------------------
+   The /api/auth/google/callback route called
+   token_response.raise_for_status() and userinfo_response.raise_for_status()
+   with no try/except. Any HTTP error from Google (e.g. redirect URI
+   mismatch, invalid client secret, expired code) raised an unhandled
+   exception that surfaced as a raw 500 instead of redirecting the
+   user back to the frontend with a readable error message.
+
+   Fix: Wrapped Google token and userinfo calls in try/except blocks
+        catching httpx.HTTPStatusError and httpx.HTTPError, and added
+        a _redirect_with_auth_error() helper that redirects the user
+        to the frontend with ?auth_error=<message> instead of crashing.
+
+
+5. No graceful handling for DB outages in auth service
+   -----------------------------------------------------
+   SQLAlchemy/asyncpg connection errors (gaierror, connection refused,
+   timeout) propagated unhandled through the service layer and surfaced
+   as raw 500 responses with a full Python traceback in the server log.
+
+   Fix: Added try/except around all DB calls in auth_service.py,
+        converting SQLAlchemy and general connection exceptions into a
+        structured HTTP 503 response:
+            {"error": "db_unavailable", "message": "Database unavailable. Please try again."}
+
+
+FILES CHANGED
+-------------
+  backend/.env                        — DATABASE_URL corrected (pooler host, no sslmode)
+  backend/app/db/session.py           — Added connect_args={"ssl": "require"} to engine
+  backend/alembic/env.py              — Added connect_args={"ssl": "require"} to migration engine
+  backend/app/api/auth.py             — Google callback error handling + _redirect_with_auth_error helper
+  backend/app/services/auth_service.py — DB error handling returning 503 instead of 500
+
+
+VERIFIED WORKING
+----------------
+  - alembic current  →  d9303bb5868b (head)   [DB connection confirmed]
+  - TCP connectivity to pooler host confirmed  [TcpTestSucceeded: True]
