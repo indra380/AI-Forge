@@ -24,9 +24,12 @@ class ConversationMessage:
 class MemoryService:
     """Business logic for short-term conversational memory."""
 
+    _message_overhead_chars = 8
+
     def __init__(self, repository: MemoryRepository):
         self._repository = repository
         self._max_history_messages = settings.MAX_HISTORY_MESSAGES
+        self._max_context_chars = settings.MAX_CONTEXT_CHARS
 
     async def get_history(self, session_id: str) -> list[ConversationMessage]:
         payload = await self._repository.get_messages(session_id)
@@ -110,8 +113,15 @@ class MemoryService:
             return history
         return history[-self._max_history_messages :]
 
+    def _estimate_message_size(self, message: dict[str, str]) -> int:
+        return (
+            len(message.get("role", ""))
+            + len(message.get("content", ""))
+            + self._message_overhead_chars
+        )
+
     def _trim_for_context_budget(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
-        max_context_chars = settings.MAX_CONTEXT_CHARS
+        max_context_chars = self._max_context_chars
         if max_context_chars <= 0:
             return messages
 
@@ -122,7 +132,11 @@ class MemoryService:
         latest_user_message = messages[-1]
         middle = messages[1:-1]
 
-        budget = max_context_chars - len(system_message["content"]) - len(latest_user_message["content"])
+        budget = (
+            max_context_chars
+            - self._estimate_message_size(system_message)
+            - self._estimate_message_size(latest_user_message)
+        )
         if budget <= 0:
             logger.warning("Context budget too small; sending only system and latest message")
             return [system_message, latest_user_message]
@@ -130,11 +144,11 @@ class MemoryService:
         kept_reversed: list[dict[str, str]] = []
         used = 0
         for msg in reversed(middle):
-            content_len = len(msg.get("content", ""))
-            if used + content_len > budget:
+            message_size = self._estimate_message_size(msg)
+            if used + message_size > budget:
                 break
             kept_reversed.append(msg)
-            used += content_len
+            used += message_size
 
         kept_middle = list(reversed(kept_reversed))
         return [system_message, *kept_middle, latest_user_message]
