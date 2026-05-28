@@ -1,6 +1,6 @@
 import urllib.parse
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from fastapi.responses import RedirectResponse
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,10 +11,12 @@ from app.schemas.auth import LoginRequest, RegisterRequest, UserResponse
 from app.services.auth_service import (
     authenticate_user,
     create_access_token,
+    get_user_by_email,
     get_current_user,
     get_or_create_google_user,
     register_user,
 )
+from app.services.onboarding_automation_service import trigger_user_onboarding_webhook
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -37,8 +39,18 @@ def _set_auth_cookie(response: Response, user_id: str) -> None:
 
 
 @router.post("/register", response_model=UserResponse)
-async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db)) -> UserResponse:
+async def register(
+    payload: RegisterRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
     user = await register_user(db, payload.email, payload.password)
+    background_tasks.add_task(
+        trigger_user_onboarding_webhook,
+        user_id=user.id,
+        email=user.email,
+        source="email_registration",
+    )
     return UserResponse(id=user.id, email=user.email)
 
 
@@ -86,6 +98,7 @@ async def google_login() -> RedirectResponse:
 @router.get("/google/callback")
 async def google_callback(
     code: str,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
@@ -127,12 +140,21 @@ async def google_callback(
     email: str = userinfo.get("email", "")
     google_id: str = userinfo.get("sub", "")
 
+    existing_user = await get_user_by_email(db, email)
     try:
         user = await get_or_create_google_user(db, email, google_id)
     except HTTPException as exc:
         # Non-amzur.com email — redirect to frontend with error
         error_msg = urllib.parse.quote(exc.detail["message"])
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/?auth_error={error_msg}")
+
+    if existing_user is None:
+        background_tasks.add_task(
+            trigger_user_onboarding_webhook,
+            user_id=user.id,
+            email=user.email,
+            source="google_oauth_registration",
+        )
 
     redirect = RedirectResponse(url=settings.FRONTEND_URL)
     _set_auth_cookie(redirect, str(user.id))

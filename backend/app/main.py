@@ -2,6 +2,7 @@ from pathlib import Path
 import asyncio
 import contextlib
 import logging
+import sys
 import time
 
 from fastapi import FastAPI
@@ -29,9 +30,36 @@ configure_application_logging()
 logger = logging.getLogger("uvicorn.error")
 
 
+def _install_windows_asyncio_exception_filter() -> None:
+    """Suppress known non-fatal Proactor shutdown noise on Windows."""
+    if sys.platform != "win32":
+        return
+
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+
+    def _handler(loop_obj: asyncio.AbstractEventLoop, context: dict) -> None:
+        exc = context.get("exception")
+        message = str(context.get("message") or "")
+
+        # Ignore noisy but harmless socket shutdown race during connection close.
+        if isinstance(exc, OSError) and getattr(exc, "winerror", None) == 10038:
+            if "_call_connection_lost" in message or "Proactor" in message:
+                logger.debug("Suppressed non-fatal Windows Proactor close error: %s", exc)
+                return
+
+        if previous_handler is not None:
+            previous_handler(loop_obj, context)
+        else:
+            loop_obj.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001
     # ── startup ──────────────────────────────────────────────────────────────
+    _install_windows_asyncio_exception_filter()
     startup_msg = f"app_startup | env={settings.ENVIRONMENT} | app={settings.APP_NAME}"
     logger.info(startup_msg)
     print(startup_msg, flush=True)

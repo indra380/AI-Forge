@@ -35,3 +35,6 @@ class ChatThread(Base):
     messages = relationship(
         "ChatMessage", back_populates="thread", cascade="all, delete-orphan"
     )
+    research_papers = relationship(
+        "ResearchPaper", back_populates="thread", cascade="all, delete-orphan"
+    )

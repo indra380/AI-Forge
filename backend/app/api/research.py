@@ -29,6 +29,7 @@ from app.services.research_digest_agent_service import (
     generate_research_digest,
     search_research_papers,
 )
+from app.services.research_paper_service import save_research_papers
 from app.services.thread_service import get_thread, get_thread_type, touch_thread
 
 logger = get_logger(__name__)
@@ -122,6 +123,13 @@ async def event_stream_generator(
             assistant_text,
             commit=False,
             refresh=False,
+        )
+        await save_research_papers(
+            db,
+            user_id,
+            thread_id,
+            result["query"],
+            list(result["papers"]),
         )
         logger.info("[RESEARCH_AGENT] stream saved assistant digest message thread_id=%s", thread_id)
 

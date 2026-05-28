@@ -1,0 +1,372 @@
+{
+  "name": "Chatbot Registration Workflow - GChat",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "user-onboarding",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "93451388-c6dc-4141-bc79-7ad01d9fee8d",
+      "name": "Chatbot Registration",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        240,
+        400
+      ],
+      "webhookId": "e6e7e83a-9b83-4ef3-a785-4a476b479c02"
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "users",
+          "mode": "list",
+          "cachedResultName": "users"
+        },
+        "limit": 1,
+        "where": {
+          "values": [
+            {
+              "column": "id",
+              "value": "={{ $json.body.user_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b4fd77ec-1e94-40ae-9b26-75b03266ab65",
+      "name": "Fetch User Details",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        464,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "wa0xYaxoTXt1ccFA",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1",
+              "name": "fullName",
+              "value": "={{ $json.full_name }}",
+              "type": "string"
+            },
+            {
+              "id": "2",
+              "name": "emailAddress",
+              "value": "={{ $json.email }}",
+              "type": "string"
+            },
+            {
+              "id": "3",
+              "name": "userId",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "4",
+              "name": "registrationDate",
+              "value": "={{ $json.created_at }}",
+              "type": "string"
+            },
+            {
+              "id": "5",
+              "name": "is_active",
+              "value": "={{ $json.is_active }}",
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0acdbc8a-bd4a-4e8a-9e34-eaee66f105f9",
+      "name": "Transform User Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        688,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Fetch User Details').item.json.email }}",
+        "subject": "Welcome to Our Platform!",
+        "message": "=Hello {{ $json.fullName }},\n\nThank you for registering successfully.\n\nUser Details:\n\nUser ID: {{ $json.userId }}\n\nEmail: {{ $json.emailAddress }}\n\nRegistration Date:\n{{ $json.registrationDate }}\n\nAccount Status:\n{{ $json.is_active }}\n\nWe are excited to have you onboard.\n\nBest regards,\nAI Team",
+        "options": {}
+      },
+      "id": "97e01992-ca98-4258-9ca8-64c3599d73db",
+      "name": "Send Gmail Notification",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        912,
+        208
+      ],
+      "webhookId": "773e2062-96dd-4d00-ab6a-695cbd774f9c",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "oYSoxkScIlEGr1PR",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true, \"message\": \"User registration processed successfully\", \"userId\": $(\"Transform User Data\").item.json.userId } }}",
+        "options": {}
+      },
+      "id": "ab416897-a7cc-4240-8127-670ba7e91a2b",
+      "name": "Return Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1136,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GCHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"text\": \"New user registered!\\n\\nName: \" + $json.fullName + \"\\nEmail: \" + $json.emailAddress + \"\\nUser ID: \" + $json.userId + \"\\nStatus: \" + $json.is_active } }}",
+        "options": {}
+      },
+      "id": "3f71f89e-71ef-468b-b808-8be75d4300ae",
+      "name": "Send Google Chat Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        912,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "user_onboarding_logs",
+          "mode": "list",
+          "cachedResultName": "user_onboarding_logs"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "email_notification_sent": true,
+            "slack_notification_sent": true,
+            "user_id": "={{$json.userId}}",
+            "email": "={{$json.emailAddress}}",
+            "onboarding_status": "completed",
+            "workflow_execution_id": "={{$execution.id}}",
+            "created_at": "={{$now}}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "onboarding_status",
+              "displayName": "onboarding_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email_notification_sent",
+              "displayName": "email_notification_sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "slack_notification_sent",
+              "displayName": "slack_notification_sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "workflow_execution_id",
+              "displayName": "workflow_execution_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        912,
+        592
+      ],
+      "id": "494c0c25-2393-4859-8cb6-3afa385bfb97",
+      "name": "Insert rows in a table",
+      "credentials": {
+        "postgres": {
+          "id": "wa0xYaxoTXt1ccFA",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Chatbot Registration": {
+      "main": [
+        [
+          {
+            "node": "Fetch User Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch User Details": {
+      "main": [
+        [
+          {
+            "node": "Transform User Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform User Data": {
+      "main": [
+        [
+          {
+            "node": "Send Gmail Notification",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Google Chat Notification",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Insert rows in a table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Gmail Notification": {
+      "main": [
+        [
+          {
+            "node": "Return Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Google Chat Notification": {
+      "main": [
+        [
+          {
+            "node": "Return Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert rows in a table": {
+      "main": [
+        [
+          {
+            "node": "Return Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "tags": []
+}

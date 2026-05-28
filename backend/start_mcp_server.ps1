@@ -16,7 +16,7 @@ Write-Host "SSE endpoint: http://127.0.0.1:8081/sse"
 Write-Host "Press Ctrl+C to stop."
 
 try {
-    $exePath = "$PSScriptRoot\.venv\Scripts\arxiv-mcp-server.exe"
+    $exePath = "$PSScriptRoot\.mcp-venv\Scripts\arxiv-mcp-server.exe"
     $cmdLine = '"{0}" --storage-path "{1}" 2>&1' -f $exePath, $storagePath
     cmd /c $cmdLine | Where-Object {
         # Filter out benign Windows async cleanup errors during shutdown

@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     # Google Sheets
     GOOGLE_SERVICE_ACCOUNT_JSON: Optional[str] = None
 
+    # n8n onboarding automation
+    N8N_ONBOARDING_ENABLED: bool = False
+    N8N_ONBOARDING_WEBHOOK_URL: Optional[str] = None
+    N8N_WEBHOOK_USER: Optional[str] = None
+    N8N_WEBHOOK_PASSWORD: Optional[str] = None
+    N8N_WEBHOOK_TIMEOUT_SECONDS: int = 5
+
     # MCP arXiv server (tool layer)
     ARXIV_MCP_COMMAND: str = "npx"
     ARXIV_MCP_ARGS: str = "-y arxiv-mcp-server/mcp-simple-arxiv"
@@ -57,8 +64,8 @@ class Settings(BaseSettings):
     ARXIV_DIRECT_TIMEOUT_SECONDS: int = 4
     ARXIV_MCP_ONLY: bool = True
     # HTTP MCP server (preferred over stdio on Windows)
-    ARXIV_MCP_HTTP_URL: Optional[str] = "http://127.0.0.1:8081/mcp/"
-    ARXIV_MCP_SSE_URL: Optional[str] = "http://127.0.0.1:8081/sse"
+    ARXIV_MCP_HTTP_URL: Optional[str] = None
+    ARXIV_MCP_SSE_URL: Optional[str] = None
     ARXIV_MCP_STORAGE_PATH: str = "./arxiv_papers"
     # When False, avoid synthetic paper results during rate limits.
     ARXIV_USE_MOCK_ON_RATE_LIMIT: bool = False

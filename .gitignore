@@ -32,3 +32,9 @@ dist/
 .vscode/
 .idea/
 *.DS_Store
+
+# Local tooling artifacts
+backend/.mcp-venv/
+backend/*.log
+backend/*.out
+backend/*.err

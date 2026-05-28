@@ -35,3 +35,6 @@ class User(Base):
     image_rules = relationship(
         "ImageRule", back_populates="user", cascade="all, delete-orphan"
     )
+    research_papers = relationship(
+        "ResearchPaper", back_populates="user", cascade="all, delete-orphan"
+    )

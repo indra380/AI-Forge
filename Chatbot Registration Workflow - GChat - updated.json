@@ -1,0 +1,411 @@
+{
+  "name": "Chatbot Registration Workflow - GChat",
+  "nodes": [
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://chat.googleapis.com/v1/spaces/YOUR_SPACE_ID/messages?key=YOUR_GCHAT_KEY&token=YOUR_GCHAT_TOKEN",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"text\":\n    \"User Onboarding Completed\\n\\n\" +\n    \"Name: \" + ($('Transform User Data1').item.json.fullName || \"N/A\") + \"\\n\" +\n    \"Email: \" + ($('Transform User Data1').item.json.emailAddress || \"N/A\") + \"\\n\" +\n    \"User ID: \" + ($('Transform User Data1').item.json.userId || \"N/A\") + \"\\n\" +\n    \"Registered At: \" + ($('Transform User Data1').item.json.registrationDate || \"N/A\") + \"\\n\" +\n    \"Status: \" + ($('Transform User Data1').item.json.is_active ? \"Active\" : \"Inactive\") + \"\\n\\n\" +\n    \"Automation: n8n User Onboarding\"\n} }}",
+        "options": {}
+      },
+      "id": "288eb05a-4f28-476c-a664-8a47dd25620a",
+      "name": "Send Google Chat Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -272,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "user-onboarding",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "4d480f9e-9589-4867-9347-a9a9d9463405",
+      "name": "Chatbot Registration1",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1152,
+        560
+      ],
+      "webhookId": "e6e7e83a-9b83-4ef3-a785-4a476b479c02"
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "users",
+          "mode": "list",
+          "cachedResultName": "users"
+        },
+        "limit": 1,
+        "where": {
+          "values": [
+            {
+              "column": "id",
+              "value": "={{ $json.body.user_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "dbbccdc6-2ddf-4a61-a5be-7cc6a3668999",
+      "name": "Fetch User Details1",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -960,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "iwI6Z59nVq8mDeND",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1",
+              "name": "fullName",
+              "value": "={{ $json.full_name }}",
+              "type": "string"
+            },
+            {
+              "id": "2",
+              "name": "emailAddress",
+              "value": "={{ $json.email }}",
+              "type": "string"
+            },
+            {
+              "id": "3",
+              "name": "userId",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "4",
+              "name": "registrationDate",
+              "value": "={{ $json.created_at }}",
+              "type": "string"
+            },
+            {
+              "id": "5",
+              "name": "is_active",
+              "value": "={{ $json.is_active }}",
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7ce10ab8-ec4b-4957-aac9-67307f0af172",
+      "name": "Transform User Data1",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -768,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Transform User Data1').item.json.emailAddress }}",
+        "subject": "Welcome to Amzur AI Chat - Your Account Is Ready",
+        "emailType": "text",
+        "message": "=Hello {{ $('Transform User Data1').item.json.fullName || 'User' }},\n\nWelcome to Amzur AI Chat.\n\nYour account has been created successfully, and you can now start using the platform.\n\nAccount Details\n- Name: {{ $('Transform User Data1').item.json.fullName || 'N/A' }}\n- Email: {{ $('Transform User Data1').item.json.emailAddress || 'N/A' }}\n- User ID: {{ $('Transform User Data1').item.json.userId || 'N/A' }}\n- Registration Date: {{ $('Transform User Data1').item.json.registrationDate || 'N/A' }}\n- Account Status: {{ $('Transform User Data1').item.json.is_active ? 'Active' : 'Inactive' }}\n\nWhat you can do next\n1. Sign in to your dashboard\n2. Start a new chat thread\n3. Upload documents for AI-assisted analysis\n\nIf you did not create this account, please reply to this email immediately.\n\nBest regards,\nAmzur AI Team\nSupport: support@amzur.com",
+        "options": {}
+      },
+      "id": "ef706142-a72c-4128-a96f-24703a77b8d4",
+      "name": "Send Gmail Notification1",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -416,
+        352
+      ],
+      "webhookId": "773e2062-96dd-4d00-ab6a-695cbd774f9c",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "h5mVz3nFkduyKvlx",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true, \"message\": \"User registration processed successfully\", \"userId\": $(\"Transform User Data1\").item.json.userId } }}",
+        "options": {}
+      },
+      "id": "0b65fdf1-e2fa-4947-ba00-e5bfd2af4776",
+      "name": "Return Success Response1",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        112,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "user_onboarding_logs",
+          "mode": "list",
+          "cachedResultName": "user_onboarding_logs"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "user_id": "={{ $('Transform User Data1').item.json.userId }}",
+            "email": "={{ $('Transform User Data1').item.json.emailAddress }}",
+            "onboarding_status": "completed",
+            "email_notification_sent": true,
+            "slack_notification_sent": false,
+            "workflow_execution_id": "={{ $execution.id }}"
+          },
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "onboarding_status",
+              "displayName": "onboarding_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email_notification_sent",
+              "displayName": "email_notification_sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "slack_notification_sent",
+              "displayName": "slack_notification_sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "workflow_execution_id",
+              "displayName": "workflow_execution_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": true,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -384,
+        752
+      ],
+      "id": "8caa35b6-a1a1-4751-acfe-2b7f36a8a495",
+      "name": "Insert rows in a table1",
+      "credentials": {
+        "postgres": {
+          "id": "iwI6Z59nVq8mDeND",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://chat.googleapis.com/v1/spaces/AAQACJpPSAY/members",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"member\": {\n    \"name\": \"users/\" + $('Transform User Data1').item.json.emailAddress,\n    \"type\": \"HUMAN\"\n  }\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -464,
+        528
+      ],
+      "id": "becba6cf-b1d8-4aa8-90f2-28a45a50b124",
+      "name": "Add user to Space",
+      "credentials": {
+        "googleOAuth2Api": {
+          "id": "uSU3gPiAXx9Qhh5U",
+          "name": "Google account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Send Google Chat Notification": {
+      "main": [
+        [
+          {
+            "node": "Return Success Response1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chatbot Registration1": {
+      "main": [
+        [
+          {
+            "node": "Fetch User Details1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch User Details1": {
+      "main": [
+        [
+          {
+            "node": "Transform User Data1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform User Data1": {
+      "main": [
+        [
+          {
+            "node": "Send Gmail Notification1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Insert rows in a table1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Add user to Space",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Gmail Notification1": {
+      "main": [
+        [
+          {
+            "node": "Return Success Response1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert rows in a table1": {
+      "main": [
+        [
+          {
+            "node": "Return Success Response1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add user to Space": {
+      "main": [
+        [
+          {
+            "node": "Send Google Chat Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "4e916871970f913cafeef0242970f11bd0d3a75eb7f57ae24836b088a6cbe0d3"
+  },
+  "id": "GMBPSahHAWloG3Ot",
+  "tags": []
+}

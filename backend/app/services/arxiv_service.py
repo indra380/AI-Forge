@@ -10,10 +10,22 @@ import time
 from typing import Any, Optional
 
 import arxiv
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.sse import sse_client
-from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
+
+try:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.sse import sse_client
+    from mcp.client.stdio import stdio_client
+    from mcp.client.streamable_http import streamablehttp_client
+    _MCP_AVAILABLE = True
+    _MCP_IMPORT_ERROR = ""
+except ModuleNotFoundError as exc:
+    ClientSession = Any  # type: ignore[assignment]
+    StdioServerParameters = Any  # type: ignore[assignment]
+    sse_client = None  # type: ignore[assignment]
+    stdio_client = None  # type: ignore[assignment]
+    streamablehttp_client = None  # type: ignore[assignment]
+    _MCP_AVAILABLE = False
+    _MCP_IMPORT_ERROR = str(exc)
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -97,6 +109,8 @@ class PaperInfo:
 
 
 def _build_stdio_params() -> StdioServerParameters:
+    if not _MCP_AVAILABLE:
+        raise RuntimeError(f"MCP client is not available: {_MCP_IMPORT_ERROR}")
     command = settings.ARXIV_MCP_COMMAND
     if os.name == "nt" and command.lower() == "npx":
         command = "npx.cmd"
@@ -612,6 +626,13 @@ async def search_papers(
     sort_by: str = "relevance",
 ) -> list[PaperInfo]:
     """Search arXiv papers through MCP server tools."""
+    if not _MCP_AVAILABLE:
+        logger.warning(
+            "[RESEARCH_AGENT] mcp_import_missing fallback=python-arxiv error=%s",
+            _MCP_IMPORT_ERROR,
+        )
+        return await _fallback_search(query, max_results, sort_by)
+
     normalized_max = max(1, int(max_results))
     cache_key = (query.strip().lower(), normalized_max, sort_by)
     cached = _SEARCH_CACHE.get(cache_key)
@@ -771,6 +792,14 @@ async def search_papers(
 
 async def get_paper_details(arxiv_id: str) -> Optional[PaperInfo]:
     """Retrieve full details for one paper through MCP tools."""
+    if not _MCP_AVAILABLE:
+        logger.warning(
+            "[RESEARCH_AGENT] mcp_import_missing details_fallback=python-arxiv id=%s error=%s",
+            arxiv_id,
+            _MCP_IMPORT_ERROR,
+        )
+        return await _fallback_details(arxiv_id)
+
     logger.info("[RESEARCH_AGENT] mcp.arxiv.details start id=%s", arxiv_id)
     details: Optional[PaperInfo] = None
     skip_stdio_fallback = bool(settings.ARXIV_MCP_HTTP_URL) and os.name == "nt"
