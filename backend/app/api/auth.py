@@ -3,6 +3,7 @@ import urllib.parse
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from fastapi.responses import RedirectResponse
 import httpx
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -140,12 +141,17 @@ async def google_callback(
     email: str = userinfo.get("email", "")
     google_id: str = userinfo.get("sub", "")
 
-    existing_user = await get_user_by_email(db, email)
     try:
+        existing_user = await get_user_by_email(db, email)
         user = await get_or_create_google_user(db, email, google_id)
     except HTTPException as exc:
         # Non-amzur.com email — redirect to frontend with error
         error_msg = urllib.parse.quote(exc.detail["message"])
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/?auth_error={error_msg}")
+    except SQLAlchemyError:
+        error_msg = urllib.parse.quote(
+            "Login failed because the database is unavailable. Verify DATABASE_URL and try again."
+        )
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/?auth_error={error_msg}")
 
     if existing_user is None:

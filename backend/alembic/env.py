@@ -9,14 +9,15 @@ from alembic import context
 
 # Import app Base (with all models registered) and settings
 from app.core.config import settings
-from app.db.session import Base
+from app.db.session import Base, build_async_engine_config
 import app.models  # noqa: F401 — registers all ORM models with Base.metadata
 
 # Alembic Config object
 config = context.config
 
 # Override sqlalchemy.url from app settings (asyncpg URL)
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+database_url, connect_args = build_async_engine_config(settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -47,6 +48,7 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
